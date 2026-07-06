@@ -10,7 +10,7 @@ Collections:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from typing import Any
 
 from motor.motor_asyncio import (
@@ -97,9 +97,17 @@ async def close_db() -> None:
 # ---------------------------------------------------------------------------
 
 async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
-    """Create all required indexes (idempotent — safe to call on every start)."""
+    """
+    Create all required indexes (idempotent — safe to call on every start).
 
-    # scheduled_posts
+    Storage-efficiency strategy:
+    - TTL index on scheduled_posts.expire_at  → MongoDB auto-deletes posted/failed docs
+      after 30 days without any application code.
+    - TTL index on lifecycle_tasks.expire_at  → completed tasks auto-deleted after 24 h.
+    - Compound indexes cover the hottest query paths so full-collection scans never happen.
+    """
+
+    # ── scheduled_posts ──────────────────────────────────────────────────────
     posts: AsyncIOMotorCollection = db[COL_POSTS]
     await posts.create_indexes([
         IndexModel([("user_id", ASCENDING)]),
@@ -107,9 +115,17 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
         IndexModel([("status", ASCENDING)]),
         IndexModel([("recurrence.next_run_at", ASCENDING)]),
         IndexModel([("user_id", ASCENDING), ("status", ASCENDING)]),
+        # TTL: MongoDB removes the document automatically when expire_at is reached.
+        # We set expire_at = now + 30 days whenever status → posted / failed.
+        IndexModel(
+            [("expire_at", ASCENDING)],
+            expireAfterSeconds=0,   # fire exactly at expire_at
+            sparse=True,            # ignore docs that don't have expire_at yet
+            name="ttl_posts_expire",
+        ),
     ])
 
-    # queue_slots
+    # ── queue_slots ───────────────────────────────────────────────────────────
     queues: AsyncIOMotorCollection = db[COL_QUEUE_SLOTS]
     await queues.create_indexes([
         IndexModel([("user_id", ASCENDING)]),
@@ -117,7 +133,7 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
         IndexModel([("user_id", ASCENDING), ("chat_id", ASCENDING)], unique=True),
     ])
 
-    # media_pools
+    # ── media_pools ───────────────────────────────────────────────────────────
     pools: AsyncIOMotorCollection = db[COL_MEDIA_POOLS]
     await pools.create_indexes([
         IndexModel([("user_id", ASCENDING)]),
@@ -125,7 +141,38 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
         IndexModel([("user_id", ASCENDING), ("chat_id", ASCENDING)], unique=True),
     ])
 
+    # ── lifecycle_tasks ───────────────────────────────────────────────────────
+    tasks: AsyncIOMotorCollection = db["lifecycle_tasks"]
+    await tasks.create_indexes([
+        IndexModel([("done", ASCENDING)]),
+        IndexModel([("fire_at", ASCENDING)]),
+        # TTL: auto-delete completed tasks 24 h after they fired.
+        # expire_at is set to fire_at + 1 day when the task is stored.
+        IndexModel(
+            [("expire_at", ASCENDING)],
+            expireAfterSeconds=0,
+            sparse=True,
+            name="ttl_tasks_expire",
+        ),
+    ])
+
     logger.info("MongoDB indexes verified/created.")
+
+
+# ---------------------------------------------------------------------------
+# Storage-efficiency helpers
+# ---------------------------------------------------------------------------
+
+POST_TTL_DAYS = 30   # keep posted/failed posts for 30 days then auto-delete
+TASK_TTL_HOURS = 24  # keep completed lifecycle tasks for 24 h then auto-delete
+
+
+def _post_expire_at(days: int = POST_TTL_DAYS) -> datetime:
+    return datetime.now(tz=timezone.utc) + timedelta(days=days)
+
+
+def _task_expire_at(hours: int = TASK_TTL_HOURS) -> datetime:
+    return datetime.now(tz=timezone.utc) + timedelta(hours=hours)
 
 
 # ---------------------------------------------------------------------------
@@ -294,14 +341,22 @@ async def get_post(post_id: str) -> dict[str, Any] | None:
 
 
 async def update_post_status(post_id: str, status: str) -> None:
-    """Update the status field and bump updated_at."""
+    """
+    Update the status field and bump updated_at.
+    When status becomes 'posted' or 'failed', also stamp expire_at so the
+    TTL index can auto-delete the document after POST_TTL_DAYS days.
+    """
     if status not in POST_STATUSES:
         raise ValueError(f"Invalid status '{status}'. Must be one of {POST_STATUSES}.")
     from bson import ObjectId
-    db = await get_db()
+    db  = await get_db()
+    now = datetime.now(tz=timezone.utc)
+    fields: dict = {"status": status, "updated_at": now}
+    if status in ("posted", "failed", "paused"):
+        fields["expire_at"] = _post_expire_at()   # TTL fires in 30 days
     await db[COL_POSTS].update_one(
         {"_id": ObjectId(post_id)},
-        {"$set": {"status": status, "updated_at": datetime.now(tz=timezone.utc)}},
+        {"$set": fields},
     )
 
 
