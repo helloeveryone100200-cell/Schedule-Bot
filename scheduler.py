@@ -240,7 +240,12 @@ async def _handle_lifecycle(bot: Bot, post: dict[str, Any], sent_msg: Message) -
 async def _store_lifecycle_task(
     chat_id: int, message_id: int, action: str, fire_at: datetime
 ) -> None:
-    """Persist a lifecycle task to MongoDB so it survives bot restarts."""
+    """
+    Persist a lifecycle task to MongoDB so it survives bot restarts.
+    expire_at = fire_at + 24 h — the TTL index auto-deletes the doc
+    once it is no longer needed, keeping the collection small.
+    """
+    from database import _task_expire_at
     db = await get_db()
     await db["lifecycle_tasks"].insert_one({
         "chat_id":    chat_id,
@@ -248,6 +253,7 @@ async def _store_lifecycle_task(
         "action":     action,
         "fire_at":    fire_at,
         "done":       False,
+        "expire_at":  _task_expire_at(),   # auto-deleted 24 h after fire_at
     })
 
 
