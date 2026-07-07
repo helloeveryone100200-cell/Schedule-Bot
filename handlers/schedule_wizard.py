@@ -313,8 +313,23 @@ def _parse_hhmm(text: str) -> str | None:
 # ---------------------------------------------------------------------------
 
 async def _edit(query: Any, text: str, keyboard: InlineKeyboardMarkup) -> None:
+    """
+    Answer the callback and edit the message in-place.
+    Falls back to reply_text if the edit fails (e.g. message too old, parse error).
+    """
     await query.answer()
-    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+    try:
+        await query.edit_message_text(
+            text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard
+        )
+    except Exception as exc:
+        logger.warning("edit_message_text failed (%s) — sending new message instead.", exc)
+        try:
+            await query.message.reply_text(
+                text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard
+            )
+        except Exception as exc2:
+            logger.error("reply_text fallback also failed: %s", exc2)
 
 
 # ---------------------------------------------------------------------------
@@ -331,9 +346,9 @@ async def enter_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         query,
         "📅 *Schedule New Post — Step 1/9*\n\n"
         "Send the *Chat ID* of the channel or group you want to post to.\n\n"
-        "💡 To get a chat ID: forward any message from the chat to @userinfobot or add "
-        "@username_to_id_bot to the group temporarily.\n\n"
-        "_Type the ID below (e.g. `-1001234567890`):_",
+        "💡 To get a chat ID: forward any message from the chat to @userinfobot "
+        "or add @username\\_to\\_id\\_bot to the group temporarily.\n\n"
+        "Type the ID below (example: `-1001234567890`):",
         nav_keyboard(back_data=CB_MAIN_MENU),
     )
     return WIZARD_CHAT_ID
