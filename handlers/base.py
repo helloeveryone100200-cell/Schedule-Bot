@@ -285,26 +285,34 @@ async def cb_media_pool(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 def build_base_conversation() -> ConversationHandler:
     """
-    Build and return the root ConversationHandler.
-    Steps 4 & 5 will nest their own ConversationHandlers into this structure.
+    Root ConversationHandler — handles /start, navigation, help, and cancel.
+
+    Action buttons (Schedule New Post, Manage Queue, Media Pool) are intentionally
+    NOT registered here.  They are entry_points of their own ConversationHandlers
+    (schedule_wizard, queue_manager, media_pool) which are registered BEFORE this
+    handler, so they always intercept those callbacks first.
+    Keeping them out of base_conversation eliminates any risk of the stub stub
+    handler consuming the callback before the wizard can claim it.
     """
+    # Pattern that matches navigation callbacks handled by this conversation.
+    # Any callback NOT in this set falls through to the wizard ConversationHandlers.
+    nav_pattern = f"^({CB_HELP}|{CB_CANCEL}|{CB_MAIN_MENU})$"
+
     return ConversationHandler(
         entry_points=[CommandHandler("start", cmd_start)],
         states={
             MAIN_MENU: [
-                CallbackQueryHandler(cb_help, pattern=f"^{CB_HELP}$"),
+                CallbackQueryHandler(cb_help,      pattern=f"^{CB_HELP}$"),
                 CallbackQueryHandler(cb_main_menu, pattern=f"^{CB_MAIN_MENU}$"),
-                CallbackQueryHandler(cb_cancel, pattern=f"^{CB_CANCEL}$"),
-                CallbackQueryHandler(cb_schedule_new, pattern=f"^{CB_SCHEDULE_NEW}$"),
-                CallbackQueryHandler(cb_my_posts, pattern=f"^{CB_MY_POSTS}$"),
-                CallbackQueryHandler(cb_manage_queue, pattern=f"^{CB_MANAGE_QUEUE}$"),
-                CallbackQueryHandler(cb_media_pool, pattern=f"^{CB_MEDIA_POOL}$"),
+                CallbackQueryHandler(cb_cancel,    pattern=f"^{CB_CANCEL}$"),
             ],
         },
         fallbacks=[
             CommandHandler("cancel", cmd_cancel),
-            # Catch-all: any unhandled callback returns user to main menu
-            CallbackQueryHandler(cb_main_menu),
+            # Catch-all for truly unknown callbacks in nav context only.
+            # Action callbacks (CB_SCHEDULE_NEW etc.) are purposely excluded so
+            # the wizard ConversationHandlers can claim them.
+            CallbackQueryHandler(cb_main_menu, pattern=nav_pattern),
         ],
         allow_reentry=True,
         name="base_conversation",
