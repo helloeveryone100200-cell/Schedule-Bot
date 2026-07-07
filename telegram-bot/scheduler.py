@@ -252,7 +252,6 @@ async def _store_lifecycle_task(
     expire_at = fire_at + 24 h — the TTL index auto-deletes the doc
     once it is no longer needed, keeping the collection small.
     """
-    from database import _task_expire_at
     db = await get_db()
     await db["lifecycle_tasks"].insert_one({
         "chat_id":    chat_id,
@@ -260,7 +259,11 @@ async def _store_lifecycle_task(
         "action":     action,
         "fire_at":    fire_at,
         "done":       False,
-        "expire_at":  _task_expire_at(),   # auto-deleted 24 h after fire_at
+        # expire_at must be AFTER fire_at, not just 24 h after now.
+        # If we used now+24h, a 48-hour auto-delete task would be TTL-deleted
+        # before it ever fires.  Use fire_at + 24h so TTL only cleans up
+        # AFTER the task has had a chance to run.
+        "expire_at":  fire_at + timedelta(hours=24),
     })
 
 
@@ -275,6 +278,12 @@ async def _run_lifecycle_tasks(bot: Bot) -> None:
         chat_id    = task["chat_id"]
         message_id = task["message_id"]
         action     = task["action"]
+        # IMPORTANT: do NOT use try/finally here.
+        # Python's finally always runs — even after `continue` — so a
+        # finally-based done=True would mark the task done even on transient
+        # network errors, permanently defeating the retry-next-tick logic.
+        # Instead track success explicitly and only mark done when appropriate.
+        mark_done = True   # default: mark done unless transient failure
         try:
             if action == "delete":
                 await bot.delete_message(chat_id, message_id)
@@ -283,11 +292,13 @@ async def _run_lifecycle_tasks(bot: Bot) -> None:
                 await bot.unpin_chat_message(chat_id, message_id)
                 logger.info("Unpinned message %s in chat %s (lifecycle)", message_id, chat_id)
         except (Forbidden, BadRequest) as exc:
+            # Permanent failure — will never succeed on retry; mark done now.
             logger.warning("Lifecycle %s failed for msg %s: %s", action, message_id, exc)
         except (NetworkError, TimedOut) as exc:
+            # Transient failure — leave task undone so it retries next tick.
             logger.warning("Transient error during lifecycle %s: %s", action, exc)
-            continue   # leave task marked undone — retry next tick
-        finally:
+            mark_done = False
+        if mark_done:
             await db["lifecycle_tasks"].update_one(
                 {"_id": task["_id"]}, {"$set": {"done": True}}
             )
