@@ -42,10 +42,13 @@ async def post_init(application: Application) -> None:
     await connect_db(MONGO_URI)
     logger.info("MongoDB connected.")
 
-    # 2. Set up and start APScheduler on the running event loop
-    _scheduler = setup_scheduler(application.bot)
+    # 2. Set up and start APScheduler on the SAME event loop as PTB.
+    #    asyncio.get_event_loop() inside a running coroutine returns the
+    #    current running loop, ensuring APScheduler and PTB share it.
+    loop = asyncio.get_event_loop()
+    _scheduler = setup_scheduler(application.bot, event_loop=loop)
     _scheduler.start()
-    logger.info("APScheduler started.")
+    logger.info("APScheduler started (loop id=%d).", id(loop))
 
 
 async def post_shutdown(application: Application) -> None:
