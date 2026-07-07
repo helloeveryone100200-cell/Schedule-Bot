@@ -483,15 +483,19 @@ async def scheduler_tick(bot: Bot) -> None:
 # Scheduler setup
 # ---------------------------------------------------------------------------
 
-def setup_scheduler(bot: Bot) -> AsyncIOScheduler:
+def setup_scheduler(bot: Bot, event_loop: Any = None) -> AsyncIOScheduler:
     """
     Create, configure, and return the AsyncIOScheduler.
     The scheduler is NOT started here — call .start() in main.py post_init.
 
-    APScheduler and python-telegram-bot both use the same asyncio event loop,
-    so we use AsyncIOScheduler (not BackgroundScheduler) to avoid loop conflicts.
+    Pass `event_loop` (the running asyncio loop) so APScheduler and PTB
+    share exactly the same loop. Without it, APScheduler may bind to a
+    different loop in Python 3.10+ and silently fail to run async jobs.
     """
-    scheduler = AsyncIOScheduler(timezone=timezone.utc)
+    kwargs: dict[str, Any] = {"timezone": timezone.utc}
+    if event_loop is not None:
+        kwargs["event_loop"] = event_loop
+    scheduler = AsyncIOScheduler(**kwargs)
 
     scheduler.add_job(
         scheduler_tick,
