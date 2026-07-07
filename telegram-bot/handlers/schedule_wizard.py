@@ -234,7 +234,12 @@ def _time_window_keyboard(enabled: bool) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("⬅️ Back",    callback_data=CB_BACK_MAX_RUNS),
-            InlineKeyboardButton("➡️ Next",    callback_data=CB_LC_NEXT if not enabled else CB_TW_ON),
+            # Always use CB_LC_NEXT for "Next" regardless of enabled state.
+            # cb_tw_proceed reads w["time_window_enabled"] and routes correctly:
+            # True → WIZARD_TW_START, False → WIZARD_LIFECYCLE.
+            # Previously this sent CB_TW_ON when enabled=True, which re-triggered
+            # the toggle handler instead of proceeding — leaving users stuck.
+            InlineKeyboardButton("➡️ Next",    callback_data=CB_LC_NEXT),
             InlineKeyboardButton("❌ Cancel",  callback_data=CB_CANCEL),
         ],
     ])
@@ -611,7 +616,15 @@ async def recv_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def cb_back_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     w = _w(context)
-    back = CB_BACK_DOW if w.get("recurrence_type") == "days_of_week" else CB_BACK_INTERVAL_U
+    rec_type = w.get("recurrence_type", "once")
+    if rec_type == "days_of_week":
+        back = CB_BACK_DOW
+    elif rec_type == "interval":
+        back = CB_BACK_INTERVAL_U
+    else:
+        # "once" — go back to the recurrence-type selector, not the interval-unit
+        # screen (CB_BACK_INTERVAL_U would show an irrelevant keyboard).
+        back = CB_BACK_RECURRENCE
     await _edit(query,
         "🕐 *Step 4/9 — First Run Time*\n\n"
         "• `HH:MM` — today at this time\n"
@@ -950,9 +963,10 @@ def _build_summary(w: dict[str, Any]) -> str:
     max_r = w.get("max_runs")
     max_line = f"`{max_r}` runs" if max_r else "Unlimited"
 
-    content_preview = (w.get("content_text") or "")[:60]
-    if w.get("media_type"):
-        content_preview = f"[{w['media_type'].upper()}] {content_preview}"
+    # Strip backtick characters before embedding in a Markdown code span;
+    # a backtick inside `…` terminates the span early and breaks the message.
+    raw_preview = (w.get("content_text") or "").replace("`", "'")[:60]
+    content_preview = f"[{w['media_type'].upper()}] {raw_preview}" if w.get("media_type") else raw_preview
 
     first_run = w.get("first_run_raw", "—")
 
@@ -1180,9 +1194,11 @@ def build_schedule_wizard() -> ConversationHandler:
             ],
             WIZARD_FIRST_RUN: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_first_run),
-                CallbackQueryHandler(cb_back_first_run,  pattern=f"^{CB_BACK_FIRST_RUN}$"),
-                CallbackQueryHandler(cb_back_dow,        pattern=f"^{CB_BACK_DOW}$"),
+                CallbackQueryHandler(cb_back_first_run,     pattern=f"^{CB_BACK_FIRST_RUN}$"),
+                CallbackQueryHandler(cb_back_dow,           pattern=f"^{CB_BACK_DOW}$"),
                 CallbackQueryHandler(cb_back_interval_unit, pattern=f"^{CB_BACK_INTERVAL_U}$"),
+                # "once" recurrence sends CB_BACK_RECURRENCE from first-run screen
+                CallbackQueryHandler(cb_back_recurrence,    pattern=f"^{CB_BACK_RECURRENCE}$"),
             ],
             WIZARD_TIMEZONE: [
                 CallbackQueryHandler(cb_timezone_pick,  pattern=tz_pattern),
