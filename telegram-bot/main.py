@@ -37,12 +37,16 @@ _scheduler = None
 
 async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/ping — reply with version info so users can confirm the deployment."""
-    assert update.message is not None
-    await update.message.reply_text(
-        f"🏓 *Pong!*\n\n`{BOT_VERSION}`\n\n"
-        "If you see this message the latest code is running on Render.",
-        parse_mode="Markdown",
-    )
+    if not update.message:
+        return
+    try:
+        await update.message.reply_text("pong — " + BOT_VERSION)
+    except Exception as exc:
+        logger.exception("cmd_ping failed: %s", exc)
+        try:
+            await update.message.reply_text("pong (error: " + str(exc) + ")")
+        except Exception:
+            pass
 
 
 async def post_init(application: Application) -> None:
