@@ -344,7 +344,6 @@ async def _edit(query: Any, text: str, keyboard: InlineKeyboardMarkup) -> None:
 async def enter_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry point — triggered by 'Schedule New Post' button."""
     query = update.callback_query
-    assert query is not None
     _clear(context)
     _w(context)   # initialise empty wizard dict
     await _edit(
@@ -364,7 +363,6 @@ async def enter_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 # ---------------------------------------------------------------------------
 
 async def recv_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     try:
         chat_id = int(text)
@@ -396,7 +394,6 @@ async def recv_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 # ---------------------------------------------------------------------------
 
 async def recv_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     msg: Message = update.message
     w = _w(context)
 
@@ -490,7 +487,6 @@ async def cb_rec_dow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # ---------------------------------------------------------------------------
 
 async def recv_interval_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     if not text.isdigit() or int(text) <= 0:
         await update.message.reply_text(
@@ -525,7 +521,6 @@ async def cb_back_interval_value(update: Update, context: ContextTypes.DEFAULT_T
 
 async def cb_interval_unit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     unit_map = {CB_IU_MINUTES: "minutes", CB_IU_HOURS: "hours", CB_IU_DAYS: "days"}
     unit = unit_map[query.data]
     _w(context)["interval_unit"] = unit
@@ -546,7 +541,6 @@ async def cb_interval_unit(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def cb_dow_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     day = int(query.data.split(":")[1])
     w = _w(context)
     selected: set[int] = w.setdefault("days_of_week", set())
@@ -561,7 +555,6 @@ async def cb_dow_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def cb_dow_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     w = _w(context)
     selected: set[int] = w.get("days_of_week", set())
     if not selected:
@@ -583,7 +576,6 @@ async def cb_dow_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 # ---------------------------------------------------------------------------
 
 async def recv_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     w = _w(context)
     tz_str = w.get("timezone", "UTC")
     text = (update.message.text or "").strip()
@@ -640,7 +632,6 @@ async def cb_back_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def cb_timezone_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     page = int(query.data.replace(CB_TZ_PAGE, ""))
     await query.answer()
     await query.edit_message_reply_markup(_timezone_keyboard(page))
@@ -649,7 +640,6 @@ async def cb_timezone_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def cb_timezone_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     tz_name = query.data.replace("tz:", "")
     try:
         pytz.timezone(tz_name)
@@ -695,7 +685,6 @@ async def cb_back_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # ---------------------------------------------------------------------------
 
 async def recv_max_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     if not text.isdigit():
         await update.message.reply_text(
@@ -729,7 +718,6 @@ async def recv_max_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def cb_tw_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     enabled = query.data == CB_TW_ON
     _w(context)["time_window_enabled"] = enabled
     await query.answer()
@@ -743,7 +731,6 @@ async def cb_tw_proceed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     Routes to start-time input (if ON) or lifecycle (if OFF).
     """
     query = update.callback_query
-    assert query is not None
     w = _w(context)
     if w.get("time_window_enabled"):
         await _edit(query,
@@ -772,7 +759,6 @@ async def cb_tw_proceed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 # ---------------------------------------------------------------------------
 
 async def recv_tw_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     parsed = _parse_hhmm(text)
     if parsed is None:
@@ -790,7 +776,6 @@ async def recv_tw_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def recv_tw_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     parsed = _parse_hhmm(text)
     w = _w(context)
@@ -829,7 +814,6 @@ async def recv_tw_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def cb_lc_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     w = _w(context)
     key_map = {CB_LC_AD: "auto_delete", CB_LC_SD: "self_destruct", CB_LC_AP: "auto_pin"}
     key = key_map[query.data]
@@ -844,7 +828,6 @@ async def cb_lc_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def cb_lc_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Route to the first enabled lifecycle detail step, or directly to summary."""
     query = update.callback_query
-    assert query is not None
     w = _w(context)
     if w.get("auto_delete"):
         await _edit(query,
@@ -875,7 +858,6 @@ async def cb_lc_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # ---------------------------------------------------------------------------
 
 async def recv_ad_hours(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     try:
         val = float(update.message.text.strip())
         if val <= 0:
@@ -907,7 +889,6 @@ async def recv_ad_hours(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def recv_sd_secs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     if not text.isdigit() or int(text) <= 0:
         await update.message.reply_text("⚠️ Please enter a positive integer, e.g. `60`.", parse_mode=ParseMode.MARKDOWN)
@@ -927,7 +908,6 @@ async def recv_sd_secs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 async def recv_ap_hours(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     try:
         val = float(update.message.text.strip())
         if val <= 0:
@@ -988,7 +968,6 @@ def _build_summary(w: dict[str, Any]) -> str:
 
 async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer()
     await query.edit_message_text(
         _build_summary(_w(context)),
@@ -999,7 +978,6 @@ async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def _show_summary_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     await update.message.reply_text(
         _build_summary(_w(context)),
         parse_mode=ParseMode.MARKDOWN,
@@ -1011,7 +989,6 @@ async def _show_summary_from_message(update: Update, context: ContextTypes.DEFAU
 async def cb_confirm_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Save the post to MongoDB and end the wizard."""
     query = update.callback_query
-    assert query is not None
     await query.answer("Saving…")
 
     w = _w(context)
@@ -1143,7 +1120,6 @@ async def cb_back_lifecycle(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def cb_cancel_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer("Cancelled.")
     _clear(context)
     await query.edit_message_text("❌ *Cancelled.* Use /start to begin again.", parse_mode=ParseMode.MARKDOWN)
