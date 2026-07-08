@@ -272,7 +272,6 @@ def _qm_menu_keyboard() -> InlineKeyboardMarkup:
 
 async def enter_queue_manager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     _clear(context)
     await _edit(query,
         "🗂 *Queue Manager*\n\n"
@@ -303,7 +302,6 @@ async def cb_qm_set_slots(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def recv_qm_slots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
 
     # Parse "CHAT_ID: HH:MM, HH:MM, ..."
@@ -373,7 +371,6 @@ async def cb_qm_add_content(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def recv_qm_add_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     try:
         chat_id = int(text)
@@ -393,7 +390,6 @@ async def recv_qm_add_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def recv_qm_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     msg = update.message
     w   = _w(context)
 
@@ -459,7 +455,6 @@ async def recv_qm_content(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def cb_qm_confirm_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer("Adding to queue…")
     w = _w(context)
     user_id: int = query.from_user.id  # type: ignore[union-attr]
@@ -511,7 +506,6 @@ async def cb_qm_confirm_add(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def cb_qm_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer()
     user_id: int = query.from_user.id  # type: ignore[union-attr]
 
@@ -570,7 +564,6 @@ async def cb_qm_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def cb_qm_clear_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer("Clearing…")
     user_id: int = query.from_user.id  # type: ignore[union-attr]
 
@@ -620,7 +613,6 @@ def _mp_menu_keyboard() -> InlineKeyboardMarkup:
 
 async def enter_media_pool(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     _clear_mp(context)
     await _edit(query,
         "🎲 *Media Pool — Random Shuffler*\n\n"
@@ -649,7 +641,6 @@ async def cb_mp_add_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def recv_mp_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     try:
         chat_id = int(text)
@@ -669,7 +660,6 @@ async def recv_mp_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def recv_mp_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     msg = update.message
     pm  = _pm(context)
 
@@ -736,7 +726,6 @@ async def recv_mp_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def cb_mp_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer()
     user_id: int = query.from_user.id  # type: ignore[union-attr]
 
@@ -796,7 +785,6 @@ async def cb_mp_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def cb_mp_reset_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer("Resetting…")
     user_id: int = query.from_user.id  # type: ignore[union-attr]
 
@@ -839,7 +827,6 @@ async def cb_mp_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def cb_mp_clear_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer("Clearing…")
     user_id: int = query.from_user.id  # type: ignore[union-attr]
 
@@ -874,7 +861,6 @@ async def cb_back_mp_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def cb_cancel_local(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer("Cancelled.")
     _clear(context)
     _clear_mp(context)
