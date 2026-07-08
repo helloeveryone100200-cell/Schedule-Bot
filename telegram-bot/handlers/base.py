@@ -274,12 +274,13 @@ async def _render_my_posts(
 # ---------------------------------------------------------------------------
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle /start — send welcome message with action buttons."""
-    assert update.message is not None
+    """Handle /start — send welcome message with main menu buttons."""
+    if not update.message:
+        return MAIN_MENU
     await update.message.reply_text(
-        WELCOME_TEXT,
+        "🏠 *Main Menu* — choose an action:",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=start_keyboard(context.bot),
+        reply_markup=main_menu_keyboard(),
     )
     return MAIN_MENU
 
@@ -287,7 +288,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def cb_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Show the help/feature guide."""
     query = update.callback_query
-    assert query is not None
+    if not query:
+        return MAIN_MENU
     await query.answer()
     await query.edit_message_text(
         HELP_TEXT,
@@ -302,7 +304,8 @@ async def cb_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def cb_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Return to the main feature menu."""
     query = update.callback_query
-    assert query is not None
+    if not query:
+        return MAIN_MENU
     await query.answer()
     await query.edit_message_text(
         "🏠 *Main Menu* — choose an action:",
@@ -318,7 +321,8 @@ async def cb_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     Clears all user_data wizard state and returns the user to the welcome screen.
     """
     query = update.callback_query
-    assert query is not None
+    if not query:
+        return ConversationHandler.END
     await query.answer("Cancelled.")
 
     # Wipe any in-progress wizard state so the next session starts clean
@@ -333,12 +337,12 @@ async def cb_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Text-command version of cancel (/cancel)."""
-    assert update.message is not None
     context.user_data.clear()
-    await update.message.reply_text(
-        "❌ *Cancelled.* Use /start to begin again.",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    if update.message:
+        await update.message.reply_text(
+            "❌ *Cancelled.* Use /start to begin again.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
     return ConversationHandler.END
 
 
@@ -349,9 +353,10 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def cb_my_posts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry: show the first page of the user's scheduled posts."""
     query = update.callback_query
-    assert query is not None
+    if not query or not query.from_user:
+        return MY_POSTS
     await query.answer()
-    user_id: int = query.from_user.id  # type: ignore[union-attr]
+    user_id: int = query.from_user.id
     page = context.user_data.get("_mp_page", 0)
     return await _render_my_posts(query, user_id, page, context)
 
@@ -359,26 +364,29 @@ async def cb_my_posts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 async def cb_mpp_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Paginate through the posts list."""
     query = update.callback_query
-    assert query is not None
-    page = int((query.data or "").replace(CB_MPP_PAGE, ""))
+    if not query or not query.from_user:
+        return MY_POSTS
+    page_str = (query.data or "").replace(CB_MPP_PAGE, "")
+    page = int(page_str) if page_str.isdigit() else 0
     await query.answer()
-    user_id: int = query.from_user.id  # type: ignore[union-attr]
+    user_id: int = query.from_user.id
     return await _render_my_posts(query, user_id, page, context)
 
 
 async def cb_mpp_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Pause a pending post."""
-    from database import get_user_posts, update_post_status
+    from database import update_post_status
     query = update.callback_query
-    assert query is not None
+    if not query or not query.from_user:
+        return MY_POSTS
     post_id = (query.data or "").replace(CB_MPP_PAUSE, "")
     try:
         await update_post_status(post_id, "paused")
         await query.answer("⏸ Post paused.")
     except Exception as exc:
         logger.exception("Pause post %s failed: %s", post_id, exc)
-        await query.answer(f"❌ {exc}", show_alert=True)
-    user_id: int = query.from_user.id  # type: ignore[union-attr]
+        await query.answer(f"Error: {exc}", show_alert=True)
+    user_id: int = query.from_user.id
     page = context.user_data.get("_mp_page", 0)
     return await _render_my_posts(query, user_id, page, context)
 
@@ -387,15 +395,16 @@ async def cb_mpp_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     """Resume a paused post (sets status back to pending)."""
     from database import update_post_status
     query = update.callback_query
-    assert query is not None
+    if not query or not query.from_user:
+        return MY_POSTS
     post_id = (query.data or "").replace(CB_MPP_RESUME, "")
     try:
         await update_post_status(post_id, "pending")
         await query.answer("▶️ Post resumed.")
     except Exception as exc:
         logger.exception("Resume post %s failed: %s", post_id, exc)
-        await query.answer(f"❌ {exc}", show_alert=True)
-    user_id: int = query.from_user.id  # type: ignore[union-attr]
+        await query.answer(f"Error: {exc}", show_alert=True)
+    user_id: int = query.from_user.id
     page = context.user_data.get("_mp_page", 0)
     return await _render_my_posts(query, user_id, page, context)
 
@@ -403,11 +412,12 @@ async def cb_mpp_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 async def cb_mpp_del(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Ask for delete confirmation."""
     query = update.callback_query
-    assert query is not None
+    if not query or not query.from_user:
+        return MY_POSTS_CONFIRM_DELETE
     post_id = (query.data or "").replace(CB_MPP_DEL, "")
     await query.answer()
     await query.edit_message_text(
-        "⚠️ *Confirm Delete*\n\nThis post will be *permanently deleted* and cannot be recovered.\n\nProceed?",
+        "⚠️ *Confirm Delete*\n\nThis post will be permanently deleted.\n\nProceed?",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup([
             [
@@ -423,15 +433,16 @@ async def cb_mpp_del_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Execute the delete and refresh the list."""
     from database import delete_post
     query = update.callback_query
-    assert query is not None
+    if not query or not query.from_user:
+        return MY_POSTS
     post_id = (query.data or "").replace(CB_MPP_DEL_YES, "")
     try:
         deleted = await delete_post(post_id)
-        await query.answer("🗑 Deleted." if deleted else "Already deleted.")
+        await query.answer("Deleted." if deleted else "Already deleted.")
     except Exception as exc:
         logger.exception("Delete post %s failed: %s", post_id, exc)
-        await query.answer(f"❌ {exc}", show_alert=True)
-    user_id: int = query.from_user.id  # type: ignore[union-attr]
+        await query.answer(f"Error: {exc}", show_alert=True)
+    user_id: int = query.from_user.id
     page = context.user_data.get("_mp_page", 0)
     return await _render_my_posts(query, user_id, page, context)
 
