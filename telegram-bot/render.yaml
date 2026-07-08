@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: telegram-scheduler-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    autoDeploy: true
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: MONGO_URI
+        sync: false
+      - key: PORT
+        value: 8080
+      - key: ADMIN_IDS
+        sync: false
