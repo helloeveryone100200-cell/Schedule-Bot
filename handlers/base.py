@@ -20,6 +20,7 @@ from telegram import (
     Update,
 )
 from telegram.constants import ParseMode
+from handlers import chat_cleanup
 from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
@@ -328,6 +329,11 @@ async def cb_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     # Wipe any in-progress wizard state so the next session starts clean
     context.user_data.clear()
 
+    chat_id = query.message.chat_id if query.message else None
+    keep_id = query.message.message_id if query.message else None
+    if chat_id is not None:
+        await chat_cleanup.cleanup(context, chat_id, keep_message_id=keep_id)
+
     await query.edit_message_text(
         "❌ *Cancelled.*\n\nUse /start to begin again.",
         parse_mode=ParseMode.MARKDOWN,
@@ -339,6 +345,10 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Text-command version of cancel (/cancel)."""
     context.user_data.clear()
     if update.message:
+        chat_id = update.message.chat_id
+        # /cancel is itself typed by the user — sweep everything before it too,
+        # then send the confirmation as a fresh (kept) message.
+        await chat_cleanup.cleanup(context, chat_id, keep_message_id=update.message.message_id)
         await update.message.reply_text(
             "❌ *Cancelled.* Use /start to begin again.",
             parse_mode=ParseMode.MARKDOWN,

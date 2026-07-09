@@ -46,6 +46,7 @@ from database import (
     COL_QUEUE_SLOTS,
     COL_MEDIA_POOLS,
 )
+from handlers import chat_cleanup
 from handlers.base import CB_CANCEL, CB_MAIN_MENU, cmd_cancel, nav_keyboard, confirm_keyboard
 
 logger = logging.getLogger(__name__)
@@ -273,6 +274,8 @@ def _qm_menu_keyboard() -> InlineKeyboardMarkup:
 async def enter_queue_manager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     _clear(context)
+    chat_cleanup.reset(context.application.bot_data, query.message.chat_id)
+    chat_cleanup.track(context.application.bot_data, query.message.chat_id, query.message.message_id)
     await _edit(query,
         "🗂 *Queue Manager*\n\n"
         "Set up daily posting slots and auto-fill them with content.\n\n"
@@ -614,6 +617,8 @@ def _mp_menu_keyboard() -> InlineKeyboardMarkup:
 async def enter_media_pool(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     _clear_mp(context)
+    chat_cleanup.reset(context.application.bot_data, query.message.chat_id)
+    chat_cleanup.track(context.application.bot_data, query.message.chat_id, query.message.message_id)
     await _edit(query,
         "🎲 *Media Pool — Random Shuffler*\n\n"
         "Upload multiple items to a pool. At each scheduled interval the bot picks "
@@ -864,6 +869,8 @@ async def cb_cancel_local(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.answer("Cancelled.")
     _clear(context)
     _clear_mp(context)
+    chat_id = query.message.chat_id
+    await chat_cleanup.cleanup(context, chat_id, keep_message_id=query.message.message_id)
     await query.edit_message_text("❌ *Cancelled.* Use /start to begin again.", parse_mode=ParseMode.MARKDOWN)
     return ConversationHandler.END
 

@@ -40,6 +40,7 @@ from telegram.ext import (
 )
 
 from database import build_scheduled_post, insert_post
+from handlers import chat_cleanup
 from handlers.base import CB_CANCEL, CB_MAIN_MENU, cmd_cancel, nav_keyboard, confirm_keyboard
 
 logger = logging.getLogger(__name__)
@@ -346,6 +347,8 @@ async def enter_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     query = update.callback_query
     _clear(context)
     _w(context)   # initialise empty wizard dict
+    chat_cleanup.reset(context.application.bot_data, query.message.chat_id)
+    chat_cleanup.track(context.application.bot_data, query.message.chat_id, query.message.message_id)
     await _edit(
         query,
         "📅 *Schedule New Post — Step 1/9*\n\n"
@@ -1029,6 +1032,8 @@ async def cb_confirm_post(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
 
     _clear(context)
+    chat_id = query.message.chat_id
+    await chat_cleanup.cleanup(context, chat_id, keep_message_id=query.message.message_id)
     await query.edit_message_text(
         f"✅ *Post scheduled successfully!*\n\n"
         f"🆔 Post ID: `{post_id}`\n\n"
@@ -1122,6 +1127,8 @@ async def cb_cancel_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     await query.answer("Cancelled.")
     _clear(context)
+    chat_id = query.message.chat_id
+    await chat_cleanup.cleanup(context, chat_id, keep_message_id=query.message.message_id)
     await query.edit_message_text("❌ *Cancelled.* Use /start to begin again.", parse_mode=ParseMode.MARKDOWN)
     return ConversationHandler.END
 

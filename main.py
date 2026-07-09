@@ -15,10 +15,19 @@ import asyncio
 import logging
 
 from telegram import Update
-from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes
+from telegram.ext import (
+    Application,
+    ApplicationBuilder,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    CallbackQueryHandler,
+    filters,
+)
 
 from config import MONGO_URI, PORT, TELEGRAM_BOT_TOKEN
 from database import close_db, connect_db
+from handlers import chat_cleanup
 from handlers.base import build_base_conversation
 from handlers.queue_manager import build_media_pool, build_queue_manager
 from handlers.schedule_wizard import build_schedule_wizard
@@ -70,6 +79,35 @@ async def post_init(application: Application) -> None:
     logger.info("APScheduler started (loop id=%d).", id(loop))
 
 
+async def _track_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Low-priority (group=-1) tracker: records every incoming message/callback
+    message id so chat_cleanup can later wipe an entire wizard's back-and-forth
+    once it finishes. Never blocks or mutates the update.
+    """
+    chat = update.effective_chat
+    msg = update.effective_message
+    if chat is not None and msg is not None:
+        chat_cleanup.track(context.application.bot_data, chat.id, msg.message_id)
+
+
+def _patch_outgoing_tracking(app: Application) -> None:
+    """
+    Monkey-patch Bot.send_message so every message the BOT sends is recorded
+    automatically, without touching every reply_text()/send_message() call
+    site across handlers/base.py, schedule_wizard.py, queue_manager.py, etc.
+    """
+    original_send_message = app.bot.send_message
+
+    async def tracked_send_message(chat_id=None, *args, **kwargs):
+        message = await original_send_message(chat_id, *args, **kwargs)
+        if chat_id is not None and message is not None:
+            chat_cleanup.track(app.bot_data, chat_id, message.message_id)
+        return message
+
+    app.bot.send_message = tracked_send_message
+
+
 async def post_shutdown(application: Application) -> None:
     """Graceful teardown: stop scheduler, then close DB."""
     global _scheduler
@@ -99,6 +137,13 @@ def main() -> None:
     # /ping — deployment verification (registered before ConversationHandlers so
     # it is always reachable regardless of the user's conversation state)
     app.add_handler(CommandHandler("ping", cmd_ping))
+
+    # Chat cleanup tracking: patch outgoing sends, and record incoming
+    # messages/callbacks at low priority (group=-1) so they don't interfere
+    # with normal handler dispatch order.
+    _patch_outgoing_tracking(app)
+    app.add_handler(MessageHandler(filters.ALL, _track_incoming), group=-1)
+    app.add_handler(CallbackQueryHandler(_track_incoming), group=-1)
 
     # Register ConversationHandlers — specific wizards first (higher priority)
     app.add_handler(build_schedule_wizard())
