@@ -152,7 +152,15 @@ def _clear_mp(context: ContextTypes.DEFAULT_TYPE) -> None:
 
 async def _edit(query: Any, text: str, keyboard: InlineKeyboardMarkup) -> None:
     await query.answer()
-    await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+    try:
+        await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+    except Exception:
+        # edit_message_text can fail if the message is too old or already deleted;
+        # fall back to a fresh message so the user is never left without a prompt.
+        try:
+            await query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
+        except Exception:
+            logger.exception("_edit fallback reply_text also failed")
 
 
 def _parse_hhmm(text: str) -> str | None:
@@ -264,7 +272,6 @@ def _qm_menu_keyboard() -> InlineKeyboardMarkup:
 
 async def enter_queue_manager(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     _clear(context)
     await _edit(query,
         "🗂 *Queue Manager*\n\n"
@@ -286,7 +293,7 @@ async def cb_qm_set_slots(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         "⏰ *Set Daily Slots*\n\n"
         "Type the times you want to post each day, separated by commas or spaces.\n\n"
         "Example: `09:00, 14:00, 20:00`\n\n"
-        "_Send your chat/channel ID first, then the slots:_\n"
+        "Send your chat/channel ID first, then the slots:\n"
         "Format: `CHAT_ID: 09:00, 14:00, 20:00`\n"
         "Example: `-1001234567890: 09:00, 14:30, 21:00`",
         nav_keyboard(back_data=CB_BACK_QM_MENU),
@@ -295,7 +302,6 @@ async def cb_qm_set_slots(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def recv_qm_slots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
 
     # Parse "CHAT_ID: HH:MM, HH:MM, ..."
@@ -365,7 +371,6 @@ async def cb_qm_add_content(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def recv_qm_add_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     try:
         chat_id = int(text)
@@ -385,7 +390,6 @@ async def recv_qm_add_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 
 async def recv_qm_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     msg = update.message
     w   = _w(context)
 
@@ -451,7 +455,6 @@ async def recv_qm_content(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def cb_qm_confirm_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer("Adding to queue…")
     w = _w(context)
     user_id: int = query.from_user.id  # type: ignore[union-attr]
@@ -503,7 +506,6 @@ async def cb_qm_confirm_add(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def cb_qm_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer()
     user_id: int = query.from_user.id  # type: ignore[union-attr]
 
@@ -562,7 +564,6 @@ async def cb_qm_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def cb_qm_clear_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer("Clearing…")
     user_id: int = query.from_user.id  # type: ignore[union-attr]
 
@@ -612,7 +613,6 @@ def _mp_menu_keyboard() -> InlineKeyboardMarkup:
 
 async def enter_media_pool(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     _clear_mp(context)
     await _edit(query,
         "🎲 *Media Pool — Random Shuffler*\n\n"
@@ -641,7 +641,6 @@ async def cb_mp_add_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def recv_mp_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     try:
         chat_id = int(text)
@@ -661,7 +660,6 @@ async def recv_mp_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 
 async def recv_mp_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     msg = update.message
     pm  = _pm(context)
 
@@ -728,7 +726,6 @@ async def recv_mp_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 async def cb_mp_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer()
     user_id: int = query.from_user.id  # type: ignore[union-attr]
 
@@ -788,7 +785,6 @@ async def cb_mp_reset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def cb_mp_reset_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer("Resetting…")
     user_id: int = query.from_user.id  # type: ignore[union-attr]
 
@@ -831,7 +827,6 @@ async def cb_mp_clear(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def cb_mp_clear_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer("Clearing…")
     user_id: int = query.from_user.id  # type: ignore[union-attr]
 
@@ -866,7 +861,6 @@ async def cb_back_mp_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 async def cb_cancel_local(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer("Cancelled.")
     _clear(context)
     _clear_mp(context)

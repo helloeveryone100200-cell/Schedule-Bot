@@ -234,7 +234,12 @@ def _time_window_keyboard(enabled: bool) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("⬅️ Back",    callback_data=CB_BACK_MAX_RUNS),
-            InlineKeyboardButton("➡️ Next",    callback_data=CB_LC_NEXT if not enabled else CB_TW_ON),
+            # Always use CB_LC_NEXT for "Next" regardless of enabled state.
+            # cb_tw_proceed reads w["time_window_enabled"] and routes correctly:
+            # True → WIZARD_TW_START, False → WIZARD_LIFECYCLE.
+            # Previously this sent CB_TW_ON when enabled=True, which re-triggered
+            # the toggle handler instead of proceeding — leaving users stuck.
+            InlineKeyboardButton("➡️ Next",    callback_data=CB_LC_NEXT),
             InlineKeyboardButton("❌ Cancel",  callback_data=CB_CANCEL),
         ],
     ])
@@ -339,7 +344,6 @@ async def _edit(query: Any, text: str, keyboard: InlineKeyboardMarkup) -> None:
 async def enter_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry point — triggered by 'Schedule New Post' button."""
     query = update.callback_query
-    assert query is not None
     _clear(context)
     _w(context)   # initialise empty wizard dict
     await _edit(
@@ -359,7 +363,6 @@ async def enter_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 # ---------------------------------------------------------------------------
 
 async def recv_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     try:
         chat_id = int(text)
@@ -379,7 +382,7 @@ async def recv_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         "• Plain text\n"
         "• A photo, video, document, or audio\n"
         "• Text + media together (send media with a caption)\n\n"
-        "_Send your content now:_",
+        "Send your content now:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=nav_keyboard(back_data=None),
     )
@@ -391,7 +394,6 @@ async def recv_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 # ---------------------------------------------------------------------------
 
 async def recv_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     msg: Message = update.message
     w = _w(context)
 
@@ -461,7 +463,7 @@ async def cb_rec_interval(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await _edit(query,
         "⏱ *Step 3a — Interval Value*\n\n"
         "How many minutes/hours/days between each post?\n\n"
-        "_Type a positive whole number (e.g. `6`):_",
+        "Type a positive whole number (e.g. `6`):",
         nav_keyboard(back_data=CB_BACK_RECURRENCE),
     )
     return WIZARD_INTERVAL_VALUE
@@ -485,7 +487,6 @@ async def cb_rec_dow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # ---------------------------------------------------------------------------
 
 async def recv_interval_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     if not text.isdigit() or int(text) <= 0:
         await update.message.reply_text(
@@ -508,7 +509,7 @@ async def cb_back_interval_value(update: Update, context: ContextTypes.DEFAULT_T
     query = update.callback_query
     await _edit(query,
         "⏱ *Step 3a — Interval Value*\n\n"
-        "_Type a positive whole number (e.g. `6`):_",
+        "Type a positive whole number (e.g. `6`):",
         nav_keyboard(back_data=CB_BACK_RECURRENCE),
     )
     return WIZARD_INTERVAL_VALUE
@@ -520,7 +521,6 @@ async def cb_back_interval_value(update: Update, context: ContextTypes.DEFAULT_T
 
 async def cb_interval_unit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     unit_map = {CB_IU_MINUTES: "minutes", CB_IU_HOURS: "hours", CB_IU_DAYS: "days"}
     unit = unit_map[query.data]
     _w(context)["interval_unit"] = unit
@@ -541,7 +541,6 @@ async def cb_interval_unit(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def cb_dow_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     day = int(query.data.split(":")[1])
     w = _w(context)
     selected: set[int] = w.setdefault("days_of_week", set())
@@ -556,7 +555,6 @@ async def cb_dow_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def cb_dow_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     w = _w(context)
     selected: set[int] = w.get("days_of_week", set())
     if not selected:
@@ -578,7 +576,6 @@ async def cb_dow_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 # ---------------------------------------------------------------------------
 
 async def recv_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     w = _w(context)
     tz_str = w.get("timezone", "UTC")
     text = (update.message.text or "").strip()
@@ -611,7 +608,15 @@ async def recv_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 async def cb_back_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     w = _w(context)
-    back = CB_BACK_DOW if w.get("recurrence_type") == "days_of_week" else CB_BACK_INTERVAL_U
+    rec_type = w.get("recurrence_type", "once")
+    if rec_type == "days_of_week":
+        back = CB_BACK_DOW
+    elif rec_type == "interval":
+        back = CB_BACK_INTERVAL_U
+    else:
+        # "once" — go back to the recurrence-type selector, not the interval-unit
+        # screen (CB_BACK_INTERVAL_U would show an irrelevant keyboard).
+        back = CB_BACK_RECURRENCE
     await _edit(query,
         "🕐 *Step 4/9 — First Run Time*\n\n"
         "• `HH:MM` — today at this time\n"
@@ -627,7 +632,6 @@ async def cb_back_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def cb_timezone_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     page = int(query.data.replace(CB_TZ_PAGE, ""))
     await query.answer()
     await query.edit_message_reply_markup(_timezone_keyboard(page))
@@ -636,7 +640,6 @@ async def cb_timezone_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def cb_timezone_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     tz_name = query.data.replace("tz:", "")
     try:
         pytz.timezone(tz_name)
@@ -682,7 +685,6 @@ async def cb_back_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # ---------------------------------------------------------------------------
 
 async def recv_max_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     if not text.isdigit():
         await update.message.reply_text(
@@ -694,7 +696,9 @@ async def recv_max_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     val = int(text)
     w = _w(context)
     w["max_runs"] = None if val == 0 else val
-    w["time_window_enabled"] = False
+    # Use setdefault so back-navigation doesn't clobber a time-window choice
+    # the user already made.  Only initialise if the key is absent.
+    w.setdefault("time_window_enabled", False)
 
     label = "unlimited" if val == 0 else str(val)
     await update.message.reply_text(
@@ -714,7 +718,6 @@ async def recv_max_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 async def cb_tw_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     enabled = query.data == CB_TW_ON
     _w(context)["time_window_enabled"] = enabled
     await query.answer()
@@ -728,7 +731,6 @@ async def cb_tw_proceed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     Routes to start-time input (if ON) or lifecycle (if OFF).
     """
     query = update.callback_query
-    assert query is not None
     w = _w(context)
     if w.get("time_window_enabled"):
         await _edit(query,
@@ -757,7 +759,6 @@ async def cb_tw_proceed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 # ---------------------------------------------------------------------------
 
 async def recv_tw_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     parsed = _parse_hhmm(text)
     if parsed is None:
@@ -775,7 +776,6 @@ async def recv_tw_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def recv_tw_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     parsed = _parse_hhmm(text)
     w = _w(context)
@@ -814,7 +814,6 @@ async def recv_tw_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def cb_lc_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     w = _w(context)
     key_map = {CB_LC_AD: "auto_delete", CB_LC_SD: "self_destruct", CB_LC_AP: "auto_pin"}
     key = key_map[query.data]
@@ -829,26 +828,25 @@ async def cb_lc_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 async def cb_lc_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Route to the first enabled lifecycle detail step, or directly to summary."""
     query = update.callback_query
-    assert query is not None
     w = _w(context)
     if w.get("auto_delete"):
         await _edit(query,
             "🗑 *Auto-Delete — After how many hours?*\n\n"
-            "_Type a positive number (decimals OK, e.g. `24` or `0.5`):_",
+            "Type a positive number (decimals OK, e.g. `24` or `0.5`):",
             nav_keyboard(back_data=CB_BACK_LIFECYCLE),
         )
         return WIZARD_AD_HOURS
     if w.get("self_destruct"):
         await _edit(query,
             "💣 *Self-Destruct — After how many seconds?*\n\n"
-            "_Type a positive integer (e.g. `60`):_",
+            "Type a positive integer (e.g. `60`):",
             nav_keyboard(back_data=CB_BACK_LIFECYCLE),
         )
         return WIZARD_SD_SECS
     if w.get("auto_pin"):
         await _edit(query,
             "📌 *Auto-Pin — Unpin after how many hours?*\n\n"
-            "_Type a positive number (e.g. `12`):_",
+            "Type a positive number (e.g. `12`):",
             nav_keyboard(back_data=CB_BACK_LIFECYCLE),
         )
         return WIZARD_AP_HOURS
@@ -860,7 +858,6 @@ async def cb_lc_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # ---------------------------------------------------------------------------
 
 async def recv_ad_hours(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     try:
         val = float(update.message.text.strip())
         if val <= 0:
@@ -874,7 +871,7 @@ async def recv_ad_hours(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text(
             f"✅ Auto-delete: `{val}h`\n\n"
             "💣 *Self-Destruct — After how many seconds?*\n\n"
-            "_Type a positive integer:_",
+            "Type a positive integer:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=nav_keyboard(back_data=CB_BACK_LIFECYCLE),
         )
@@ -883,7 +880,7 @@ async def recv_ad_hours(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         await update.message.reply_text(
             f"✅ Auto-delete: `{val}h`\n\n"
             "📌 *Auto-Pin — Unpin after how many hours?*\n\n"
-            "_Type a positive number:_",
+            "Type a positive number:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=nav_keyboard(back_data=CB_BACK_LIFECYCLE),
         )
@@ -892,7 +889,6 @@ async def recv_ad_hours(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def recv_sd_secs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     text = (update.message.text or "").strip()
     if not text.isdigit() or int(text) <= 0:
         await update.message.reply_text("⚠️ Please enter a positive integer, e.g. `60`.", parse_mode=ParseMode.MARKDOWN)
@@ -903,7 +899,7 @@ async def recv_sd_secs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await update.message.reply_text(
             f"✅ Self-destruct: `{text}s`\n\n"
             "📌 *Auto-Pin — Unpin after how many hours?*\n\n"
-            "_Type a positive number:_",
+            "Type a positive number:",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=nav_keyboard(back_data=CB_BACK_LIFECYCLE),
         )
@@ -912,7 +908,6 @@ async def recv_sd_secs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 async def recv_ap_hours(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     try:
         val = float(update.message.text.strip())
         if val <= 0:
@@ -948,9 +943,10 @@ def _build_summary(w: dict[str, Any]) -> str:
     max_r = w.get("max_runs")
     max_line = f"`{max_r}` runs" if max_r else "Unlimited"
 
-    content_preview = (w.get("content_text") or "")[:60]
-    if w.get("media_type"):
-        content_preview = f"[{w['media_type'].upper()}] {content_preview}"
+    # Strip backtick characters before embedding in a Markdown code span;
+    # a backtick inside `…` terminates the span early and breaks the message.
+    raw_preview = (w.get("content_text") or "").replace("`", "'")[:60]
+    content_preview = f"[{w['media_type'].upper()}] {raw_preview}" if w.get("media_type") else raw_preview
 
     first_run = w.get("first_run_raw", "—")
 
@@ -972,7 +968,6 @@ def _build_summary(w: dict[str, Any]) -> str:
 
 async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer()
     await query.edit_message_text(
         _build_summary(_w(context)),
@@ -983,7 +978,6 @@ async def _show_summary(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def _show_summary_from_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    assert update.message is not None
     await update.message.reply_text(
         _build_summary(_w(context)),
         parse_mode=ParseMode.MARKDOWN,
@@ -995,7 +989,6 @@ async def _show_summary_from_message(update: Update, context: ContextTypes.DEFAU
 async def cb_confirm_post(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Save the post to MongoDB and end the wizard."""
     query = update.callback_query
-    assert query is not None
     await query.answer("Saving…")
 
     w = _w(context)
@@ -1127,7 +1120,6 @@ async def cb_back_lifecycle(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 async def cb_cancel_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    assert query is not None
     await query.answer("Cancelled.")
     _clear(context)
     await query.edit_message_text("❌ *Cancelled.* Use /start to begin again.", parse_mode=ParseMode.MARKDOWN)
@@ -1178,9 +1170,11 @@ def build_schedule_wizard() -> ConversationHandler:
             ],
             WIZARD_FIRST_RUN: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_first_run),
-                CallbackQueryHandler(cb_back_first_run,  pattern=f"^{CB_BACK_FIRST_RUN}$"),
-                CallbackQueryHandler(cb_back_dow,        pattern=f"^{CB_BACK_DOW}$"),
+                CallbackQueryHandler(cb_back_first_run,     pattern=f"^{CB_BACK_FIRST_RUN}$"),
+                CallbackQueryHandler(cb_back_dow,           pattern=f"^{CB_BACK_DOW}$"),
                 CallbackQueryHandler(cb_back_interval_unit, pattern=f"^{CB_BACK_INTERVAL_U}$"),
+                # "once" recurrence sends CB_BACK_RECURRENCE from first-run screen
+                CallbackQueryHandler(cb_back_recurrence,    pattern=f"^{CB_BACK_RECURRENCE}$"),
             ],
             WIZARD_TIMEZONE: [
                 CallbackQueryHandler(cb_timezone_pick,  pattern=tz_pattern),

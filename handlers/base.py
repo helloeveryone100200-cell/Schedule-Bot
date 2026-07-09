@@ -1,5 +1,5 @@
 """
-handlers/base.py — /start, /help, /cancel, and universal navigation guardrails.
+handlers/base.py — /start, /help, /cancel, My Posts, and universal navigation.
 
 Navigation pattern used throughout the bot:
   - Every wizard step includes ⬅️ Back and ❌ Cancel inline buttons.
@@ -32,18 +32,29 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Callback-data constants  (all ≤ 64 bytes — well within Telegram's 64-byte limit)
 # ---------------------------------------------------------------------------
-CB_HELP = "nav:help"
-CB_CANCEL = "nav:cancel"
-CB_MAIN_MENU = "nav:main_menu"
+CB_HELP         = "nav:help"
+CB_CANCEL       = "nav:cancel"
+CB_MAIN_MENU    = "nav:main_menu"
 CB_SCHEDULE_NEW = "action:schedule_new"
-CB_MY_POSTS = "action:my_posts"
+CB_MY_POSTS     = "action:my_posts"
 CB_MANAGE_QUEUE = "action:manage_queue"
-CB_MEDIA_POOL = "action:media_pool"
+CB_MEDIA_POOL   = "action:media_pool"
+
+# My Posts action prefixes (prefix + 24-char ObjectId ≤ 64 bytes total)
+CB_MPP_PAGE    = "mpp:page:"     # + page number
+CB_MPP_PAUSE   = "mpp:pause:"   # + post_id
+CB_MPP_RESUME  = "mpp:resume:"  # + post_id
+CB_MPP_DEL     = "mpp:del:"     # + post_id  (ask confirm)
+CB_MPP_DEL_YES = "mpp:delyes:"  # + post_id  (execute)
 
 # ---------------------------------------------------------------------------
 # Conversation states (used by the base ConversationHandler)
 # ---------------------------------------------------------------------------
-MAIN_MENU = 0
+MAIN_MENU               = 0
+MY_POSTS                = 1
+MY_POSTS_CONFIRM_DELETE = 2
+
+POSTS_PER_PAGE = 5
 
 
 # ---------------------------------------------------------------------------
@@ -80,11 +91,11 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("📅 Schedule New Post", callback_data=CB_SCHEDULE_NEW),
-            InlineKeyboardButton("📋 My Posts", callback_data=CB_MY_POSTS),
+            InlineKeyboardButton("📋 My Posts",          callback_data=CB_MY_POSTS),
         ],
         [
             InlineKeyboardButton("🗂 Manage Queue", callback_data=CB_MANAGE_QUEUE),
-            InlineKeyboardButton("🎲 Media Pool", callback_data=CB_MEDIA_POOL),
+            InlineKeyboardButton("🎲 Media Pool",   callback_data=CB_MEDIA_POOL),
         ],
         [
             InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL),
@@ -111,7 +122,7 @@ def confirm_keyboard(confirm_data: str, back_data: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
         [
             InlineKeyboardButton("✅ Confirm", callback_data=confirm_data),
-            InlineKeyboardButton("⬅️ Back", callback_data=back_data),
+            InlineKeyboardButton("⬅️ Back",   callback_data=back_data),
         ],
         [
             InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL),
@@ -156,16 +167,120 @@ HELP_TEXT = (
 
 
 # ---------------------------------------------------------------------------
-# Handlers
+# My Posts — helpers
+# ---------------------------------------------------------------------------
+
+_STATUS_ICON: dict[str, str] = {
+    "pending": "⏳",
+    "paused":  "⏸",
+    "posted":  "✅",
+    "failed":  "❌",
+}
+
+
+def _posts_list_text(posts: list[dict], page: int) -> str:
+    total     = len(posts)
+    n_pages   = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
+    start     = page * POSTS_PER_PAGE
+    end       = min(start + POSTS_PER_PAGE, total)
+    lines     = [f"📋 *My Posts* (page {page + 1}/{n_pages})\n"]
+    for idx, post in enumerate(posts[start:end], start=start + 1):
+        status  = post.get("status", "?")
+        chat_id = post.get("chat_id", "?")
+        rec     = post.get("recurrence", {})
+        rec_type = rec.get("type", "once")
+        next_run = rec.get("next_run_at")
+        next_str = next_run.strftime("%d/%m %H:%M UTC") if next_run else "—"
+        icon    = _STATUS_ICON.get(status, "❓")
+        lines.append(f"{idx}. {icon} Chat `{chat_id}` · `{rec_type}` · {next_str}")
+    return "\n".join(lines)
+
+
+def _posts_keyboard(posts: list[dict], page: int) -> InlineKeyboardMarkup:
+    total  = len(posts)
+    start  = page * POSTS_PER_PAGE
+    end    = min(start + POSTS_PER_PAGE, total)
+    buttons: list[list[InlineKeyboardButton]] = []
+
+    for idx, post in enumerate(posts[start:end], start=start + 1):
+        pid    = str(post["_id"])
+        status = post.get("status", "?")
+        row: list[InlineKeyboardButton] = []
+        if status == "pending":
+            row.append(InlineKeyboardButton(f"⏸ Pause #{idx}",  callback_data=f"{CB_MPP_PAUSE}{pid}"))
+        elif status == "paused":
+            row.append(InlineKeyboardButton(f"▶️ Resume #{idx}", callback_data=f"{CB_MPP_RESUME}{pid}"))
+        row.append(InlineKeyboardButton(f"🗑 Delete #{idx}", callback_data=f"{CB_MPP_DEL}{pid}"))
+        buttons.append(row)
+
+    nav_row: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav_row.append(InlineKeyboardButton("◀️ Prev", callback_data=f"{CB_MPP_PAGE}{page - 1}"))
+    if end < total:
+        nav_row.append(InlineKeyboardButton("Next ▶️", callback_data=f"{CB_MPP_PAGE}{page + 1}"))
+    if nav_row:
+        buttons.append(nav_row)
+
+    buttons.append([InlineKeyboardButton("🏠 Main Menu", callback_data=CB_MAIN_MENU)])
+    return InlineKeyboardMarkup(buttons)
+
+
+async def _render_my_posts(
+    query: Any,
+    user_id: int,
+    page: int,
+    context: ContextTypes.DEFAULT_TYPE,
+) -> int:
+    """Fetch posts and render the My Posts list. Returns the next state."""
+    from database import get_user_posts  # lazy import to avoid circular deps
+    try:
+        posts = await get_user_posts(user_id)
+    except Exception as exc:
+        logger.exception("get_user_posts failed: %s", exc)
+        await query.edit_message_text(
+            f"❌ Error loading posts: `{exc}`",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🏠 Main Menu", callback_data=CB_MAIN_MENU)]]
+            ),
+        )
+        return MY_POSTS
+
+    if not posts:
+        await query.edit_message_text(
+            "📋 *My Posts*\n\nNo posts yet. Tap *📅 Schedule New Post* to create one.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup(
+                [[InlineKeyboardButton("🏠 Main Menu", callback_data=CB_MAIN_MENU)]]
+            ),
+        )
+        return MY_POSTS
+
+    # Clamp page to valid range
+    max_page = max(0, (len(posts) + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE - 1)
+    page     = min(page, max_page)
+    context.user_data["_mp_page"] = page
+
+    await query.edit_message_text(
+        _posts_list_text(posts, page),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_posts_keyboard(posts, page),
+    )
+    return MY_POSTS
+
+
+# ---------------------------------------------------------------------------
+# Handlers — navigation & main menu
 # ---------------------------------------------------------------------------
 
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Handle /start — send welcome message with action buttons."""
-    assert update.message is not None
+    """Handle /start — send welcome message with main menu buttons."""
+    if not update.message:
+        return MAIN_MENU
     await update.message.reply_text(
-        WELCOME_TEXT,
+        "🏠 *Main Menu* — choose an action:",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=start_keyboard(context.bot),
+        reply_markup=main_menu_keyboard(),
     )
     return MAIN_MENU
 
@@ -173,7 +288,8 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def cb_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Show the help/feature guide."""
     query = update.callback_query
-    assert query is not None
+    if not query:
+        return MAIN_MENU
     await query.answer()
     await query.edit_message_text(
         HELP_TEXT,
@@ -188,7 +304,8 @@ async def cb_help(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def cb_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Return to the main feature menu."""
     query = update.callback_query
-    assert query is not None
+    if not query:
+        return MAIN_MENU
     await query.answer()
     await query.edit_message_text(
         "🏠 *Main Menu* — choose an action:",
@@ -204,7 +321,8 @@ async def cb_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     Clears all user_data wizard state and returns the user to the welcome screen.
     """
     query = update.callback_query
-    assert query is not None
+    if not query:
+        return ConversationHandler.END
     await query.answer("Cancelled.")
 
     # Wipe any in-progress wizard state so the next session starts clean
@@ -219,64 +337,114 @@ async def cb_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Text-command version of cancel (/cancel)."""
-    assert update.message is not None
     context.user_data.clear()
-    await update.message.reply_text(
-        "❌ *Cancelled.* Use /start to begin again.",
-        parse_mode=ParseMode.MARKDOWN,
-    )
+    if update.message:
+        await update.message.reply_text(
+            "❌ *Cancelled.* Use /start to begin again.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
     return ConversationHandler.END
 
 
-# Stub handlers for menu actions — these will be replaced by full wizards in Steps 4 & 5
-async def cb_schedule_new(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    assert query is not None
-    await query.answer()
-    await query.edit_message_text(
-        "📅 *Schedule New Post* — wizard coming in Step 4!\n\n"
-        "This will walk you through setting up a post with recurrence, "
-        "lifecycle, and time-window options.",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=nav_keyboard(back_data=CB_MAIN_MENU),
-    )
-    return MAIN_MENU
-
+# ---------------------------------------------------------------------------
+# Handlers — My Posts
+# ---------------------------------------------------------------------------
 
 async def cb_my_posts(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry: show the first page of the user's scheduled posts."""
     query = update.callback_query
-    assert query is not None
+    if not query or not query.from_user:
+        return MY_POSTS
+    await query.answer()
+    user_id: int = query.from_user.id
+    page = context.user_data.get("_mp_page", 0)
+    return await _render_my_posts(query, user_id, page, context)
+
+
+async def cb_mpp_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Paginate through the posts list."""
+    query = update.callback_query
+    if not query or not query.from_user:
+        return MY_POSTS
+    page_str = (query.data or "").replace(CB_MPP_PAGE, "")
+    page = int(page_str) if page_str.isdigit() else 0
+    await query.answer()
+    user_id: int = query.from_user.id
+    return await _render_my_posts(query, user_id, page, context)
+
+
+async def cb_mpp_pause(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Pause a pending post."""
+    from database import update_post_status
+    query = update.callback_query
+    if not query or not query.from_user:
+        return MY_POSTS
+    post_id = (query.data or "").replace(CB_MPP_PAUSE, "")
+    try:
+        await update_post_status(post_id, "paused")
+        await query.answer("⏸ Post paused.")
+    except Exception as exc:
+        logger.exception("Pause post %s failed: %s", post_id, exc)
+        await query.answer(f"Error: {exc}", show_alert=True)
+    user_id: int = query.from_user.id
+    page = context.user_data.get("_mp_page", 0)
+    return await _render_my_posts(query, user_id, page, context)
+
+
+async def cb_mpp_resume(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Resume a paused post (sets status back to pending)."""
+    from database import update_post_status
+    query = update.callback_query
+    if not query or not query.from_user:
+        return MY_POSTS
+    post_id = (query.data or "").replace(CB_MPP_RESUME, "")
+    try:
+        await update_post_status(post_id, "pending")
+        await query.answer("▶️ Post resumed.")
+    except Exception as exc:
+        logger.exception("Resume post %s failed: %s", post_id, exc)
+        await query.answer(f"Error: {exc}", show_alert=True)
+    user_id: int = query.from_user.id
+    page = context.user_data.get("_mp_page", 0)
+    return await _render_my_posts(query, user_id, page, context)
+
+
+async def cb_mpp_del(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Ask for delete confirmation."""
+    query = update.callback_query
+    if not query or not query.from_user:
+        return MY_POSTS_CONFIRM_DELETE
+    post_id = (query.data or "").replace(CB_MPP_DEL, "")
     await query.answer()
     await query.edit_message_text(
-        "📋 *My Posts* — coming soon!\n\nYou'll be able to list, pause, resume, and delete your posts here.",
+        "⚠️ *Confirm Delete*\n\nThis post will be permanently deleted.\n\nProceed?",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=nav_keyboard(back_data=CB_MAIN_MENU),
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Yes, delete", callback_data=f"{CB_MPP_DEL_YES}{post_id}"),
+                InlineKeyboardButton("⬅️ Back",        callback_data=CB_MY_POSTS),
+            ],
+        ]),
     )
-    return MAIN_MENU
+    return MY_POSTS_CONFIRM_DELETE
 
 
-async def cb_manage_queue(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def cb_mpp_del_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Execute the delete and refresh the list."""
+    from database import delete_post
     query = update.callback_query
-    assert query is not None
-    await query.answer()
-    await query.edit_message_text(
-        "🗂 *Queue Manager* — coming in Step 5!\n\nSet daily posting slots and auto-fill them.",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=nav_keyboard(back_data=CB_MAIN_MENU),
-    )
-    return MAIN_MENU
-
-
-async def cb_media_pool(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
-    assert query is not None
-    await query.answer()
-    await query.edit_message_text(
-        "🎲 *Media Pool* — coming in Step 5!\n\nDrop content here for the random shuffler.",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=nav_keyboard(back_data=CB_MAIN_MENU),
-    )
-    return MAIN_MENU
+    if not query or not query.from_user:
+        return MY_POSTS
+    post_id = (query.data or "").replace(CB_MPP_DEL_YES, "")
+    try:
+        deleted = await delete_post(post_id)
+        await query.answer("Deleted." if deleted else "Already deleted.")
+    except Exception as exc:
+        logger.exception("Delete post %s failed: %s", post_id, exc)
+        await query.answer(f"Error: {exc}", show_alert=True)
+    user_id: int = query.from_user.id
+    page = context.user_data.get("_mp_page", 0)
+    return await _render_my_posts(query, user_id, page, context)
 
 
 # ---------------------------------------------------------------------------
@@ -285,18 +453,17 @@ async def cb_media_pool(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 def build_base_conversation() -> ConversationHandler:
     """
-    Root ConversationHandler — handles /start, navigation, help, and cancel.
+    Root ConversationHandler — handles /start, navigation, help, cancel,
+    and the full My Posts management flow (list / pause / resume / delete).
 
-    Action buttons (Schedule New Post, Manage Queue, Media Pool) are intentionally
-    NOT registered here.  They are entry_points of their own ConversationHandlers
-    (schedule_wizard, queue_manager, media_pool) which are registered BEFORE this
-    handler, so they always intercept those callbacks first.
-    Keeping them out of base_conversation eliminates any risk of the stub stub
-    handler consuming the callback before the wizard can claim it.
+    Action entry-points for Schedule New Post, Manage Queue, and Media Pool are
+    intentionally NOT registered here — they live as entry_points in their own
+    higher-priority ConversationHandlers so those wizards always intercept first.
     """
-    # Pattern that matches navigation callbacks handled by this conversation.
-    # Any callback NOT in this set falls through to the wizard ConversationHandlers.
     nav_pattern = f"^({CB_HELP}|{CB_CANCEL}|{CB_MAIN_MENU})$"
+
+    # Patterns that contain a 24-char MongoDB ObjectId suffix
+    oid = r"[0-9a-f]{24}"
 
     return ConversationHandler(
         entry_points=[CommandHandler("start", cmd_start)],
@@ -305,13 +472,28 @@ def build_base_conversation() -> ConversationHandler:
                 CallbackQueryHandler(cb_help,      pattern=f"^{CB_HELP}$"),
                 CallbackQueryHandler(cb_main_menu, pattern=f"^{CB_MAIN_MENU}$"),
                 CallbackQueryHandler(cb_cancel,    pattern=f"^{CB_CANCEL}$"),
+                # My Posts entry from main menu
+                CallbackQueryHandler(cb_my_posts,  pattern=f"^{CB_MY_POSTS}$"),
+            ],
+            MY_POSTS: [
+                CallbackQueryHandler(cb_my_posts,   pattern=f"^{CB_MY_POSTS}$"),
+                CallbackQueryHandler(cb_mpp_page,   pattern=rf"^{CB_MPP_PAGE}\d+$"),
+                CallbackQueryHandler(cb_mpp_pause,  pattern=rf"^{CB_MPP_PAUSE}{oid}$"),
+                CallbackQueryHandler(cb_mpp_resume, pattern=rf"^{CB_MPP_RESUME}{oid}$"),
+                CallbackQueryHandler(cb_mpp_del,    pattern=rf"^{CB_MPP_DEL}{oid}$"),
+                CallbackQueryHandler(cb_main_menu,  pattern=f"^{CB_MAIN_MENU}$"),
+                CallbackQueryHandler(cb_cancel,     pattern=f"^{CB_CANCEL}$"),
+            ],
+            MY_POSTS_CONFIRM_DELETE: [
+                CallbackQueryHandler(cb_mpp_del_yes, pattern=rf"^{CB_MPP_DEL_YES}{oid}$"),
+                # Back → re-enter My Posts list
+                CallbackQueryHandler(cb_my_posts,   pattern=f"^{CB_MY_POSTS}$"),
+                CallbackQueryHandler(cb_main_menu,  pattern=f"^{CB_MAIN_MENU}$"),
+                CallbackQueryHandler(cb_cancel,     pattern=f"^{CB_CANCEL}$"),
             ],
         },
         fallbacks=[
             CommandHandler("cancel", cmd_cancel),
-            # Catch-all for truly unknown callbacks in nav context only.
-            # Action callbacks (CB_SCHEDULE_NEW etc.) are purposely excluded so
-            # the wizard ConversationHandlers can claim them.
             CallbackQueryHandler(cb_main_menu, pattern=nav_pattern),
         ],
         allow_reentry=True,

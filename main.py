@@ -14,7 +14,8 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from telegram.ext import Application, ApplicationBuilder
+from telegram import Update
+from telegram.ext import Application, ApplicationBuilder, CommandHandler, ContextTypes
 
 from config import MONGO_URI, PORT, TELEGRAM_BOT_TOKEN
 from database import close_db, connect_db
@@ -26,8 +27,26 @@ from scheduler import setup_scheduler
 
 logger = logging.getLogger(__name__)
 
+# Increment this string whenever a significant update is deployed.
+# Users can type /ping to confirm which version is running on Render.
+BOT_VERSION = "2026-07-08-v3 | My Posts ✅ | Time-Window Next ✅ | Lifecycle retry ✅"
+
 # Module-level scheduler reference so post_shutdown can stop it
 _scheduler = None
+
+
+async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/ping — reply with version info so users can confirm the deployment."""
+    if not update.message:
+        return
+    try:
+        await update.message.reply_text("pong — " + BOT_VERSION)
+    except Exception as exc:
+        logger.exception("cmd_ping failed: %s", exc)
+        try:
+            await update.message.reply_text("pong (error: " + str(exc) + ")")
+        except Exception:
+            pass
 
 
 async def post_init(application: Application) -> None:
@@ -43,9 +62,9 @@ async def post_init(application: Application) -> None:
     logger.info("MongoDB connected.")
 
     # 2. Set up and start APScheduler on the SAME event loop as PTB.
-    #    asyncio.get_event_loop() inside a running coroutine returns the
-    #    current running loop, ensuring APScheduler and PTB share it.
-    loop = asyncio.get_event_loop()
+    #    asyncio.get_running_loop() is the correct modern idiom (Python 3.10+).
+    #    get_event_loop() inside an async coroutine raises DeprecationWarning in 3.10+.
+    loop = asyncio.get_running_loop()
     _scheduler = setup_scheduler(application.bot, event_loop=loop)
     _scheduler.start()
     logger.info("APScheduler started (loop id=%d).", id(loop))
@@ -63,6 +82,7 @@ async def post_shutdown(application: Application) -> None:
 
 def main() -> None:
     logger.info("Starting Telegram Advanced Scheduler Bot…")
+    logger.info("Version: %s", BOT_VERSION)
 
     # Keep-alive server (daemon thread) — must start before PTB blocks the loop
     start_keep_alive(PORT)
@@ -75,6 +95,10 @@ def main() -> None:
         .post_shutdown(post_shutdown)
         .build()
     )
+
+    # /ping — deployment verification (registered before ConversationHandlers so
+    # it is always reachable regardless of the user's conversation state)
+    app.add_handler(CommandHandler("ping", cmd_ping))
 
     # Register ConversationHandlers — specific wizards first (higher priority)
     app.add_handler(build_schedule_wizard())

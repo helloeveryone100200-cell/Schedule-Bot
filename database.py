@@ -522,13 +522,21 @@ async def mark_pool_item_posted(
 
 
 async def reset_media_pool(user_id: int, chat_id: int) -> None:
-    """Mark all items in a pool as un-posted (full cycle reset)."""
+    """
+    Mark all items in a pool as un-posted (full cycle reset).
+
+    Both fields go inside a SINGLE $set dict.  Two separate "$set" keys in
+    the same Python dict causes the first one to be silently overwritten by
+    the second before the document ever reaches the driver.
+    """
     db = await get_db()
     now = datetime.now(tz=timezone.utc)
     await db[COL_MEDIA_POOLS].update_one(
         {"user_id": user_id, "chat_id": chat_id},
         {
-            "$set": {"updated_at": now},
-            "$set": {"items.$[].posted": False},
+            "$set": {
+                "items.$[].posted": False,
+                "updated_at": now,
+            },
         },
     )
