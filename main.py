@@ -14,7 +14,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from telegram import Update
+from telegram import Bot, Update
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -91,21 +91,29 @@ async def _track_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         chat_cleanup.track(context.application.bot_data, chat.id, msg.message_id)
 
 
-def _patch_outgoing_tracking(app: Application) -> None:
+class _TrackedBot(Bot):
     """
-    Monkey-patch Bot.send_message so every message the BOT sends is recorded
-    automatically, without touching every reply_text()/send_message() call
-    site across handlers/base.py, schedule_wizard.py, queue_manager.py, etc.
-    """
-    original_send_message = app.bot.send_message
+    Bot subclass that records every outgoing message id via chat_cleanup, so
+    wizard flows can later wipe them without touching every reply_text()/
+    send_message() call site across handlers/base.py, schedule_wizard.py,
+    queue_manager.py, etc.
 
-    async def tracked_send_message(chat_id=None, *args, **kwargs):
-        message = await original_send_message(chat_id, *args, **kwargs)
-        if chat_id is not None and message is not None:
-            chat_cleanup.track(app.bot_data, chat_id, message.message_id)
+    A plain instance-attribute monkey-patch (`app.bot.send_message = ...`)
+    does NOT work here: PTB's Bot uses __slots__, so assigning to the
+    instance raises AttributeError. Subclassing is the supported way to
+    override behaviour.
+    """
+
+    # `bot_data` is assigned onto the instance after construction (see main());
+    # _TrackedBot has no __slots__ of its own, so the subclass instance gets a
+    # normal __dict__ and this plain attribute assignment works fine.
+    bot_data: dict | None = None
+
+    async def send_message(self, chat_id=None, *args, **kwargs):
+        message = await super().send_message(chat_id, *args, **kwargs)
+        if chat_id is not None and message is not None and self.bot_data is not None:
+            chat_cleanup.track(self.bot_data, chat_id, message.message_id)
         return message
-
-    app.bot.send_message = tracked_send_message
 
 
 async def post_shutdown(application: Application) -> None:
@@ -125,23 +133,25 @@ def main() -> None:
     # Keep-alive server (daemon thread) — must start before PTB blocks the loop
     start_keep_alive(PORT)
 
-    # Build PTB Application
+    # Build PTB Application, using a _TrackedBot instance (instead of
+    # .token(...)) so outgoing sends are recorded for chat_cleanup.
+    tracked_bot = _TrackedBot(token=TELEGRAM_BOT_TOKEN)
     app: Application = (
         ApplicationBuilder()
-        .token(TELEGRAM_BOT_TOKEN)
+        .bot(tracked_bot)
         .post_init(post_init)
         .post_shutdown(post_shutdown)
         .build()
     )
+    tracked_bot.bot_data = app.bot_data
 
     # /ping — deployment verification (registered before ConversationHandlers so
     # it is always reachable regardless of the user's conversation state)
     app.add_handler(CommandHandler("ping", cmd_ping))
 
-    # Chat cleanup tracking: patch outgoing sends, and record incoming
-    # messages/callbacks at low priority (group=-1) so they don't interfere
-    # with normal handler dispatch order.
-    _patch_outgoing_tracking(app)
+    # Chat cleanup tracking: record incoming messages/callbacks at low
+    # priority (group=-1) so they don't interfere with normal handler
+    # dispatch order. Outgoing sends are tracked by _TrackedBot above.
     app.add_handler(MessageHandler(filters.ALL, _track_incoming), group=-1)
     app.add_handler(CallbackQueryHandler(_track_incoming), group=-1)
 
