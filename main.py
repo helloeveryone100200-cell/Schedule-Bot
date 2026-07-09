@@ -91,6 +91,15 @@ async def _track_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         chat_cleanup.track(context.application.bot_data, chat.id, msg.message_id)
 
 
+# Holds a reference to the running Application's bot_data dict. Populated once
+# in main() after the Application is built. A module-level variable is used
+# (rather than an attribute on the Bot instance) because PTB's TelegramObject
+# defines a strict `__setattr__` that raises AttributeError for any attribute
+# name not declared in its (and every parent class's) `__slots__` — so even a
+# fresh instance attribute on a subclass cannot be set after construction.
+_bot_data_ref: dict | None = None
+
+
 class _TrackedBot(Bot):
     """
     Bot subclass that records every outgoing message id via chat_cleanup, so
@@ -99,20 +108,16 @@ class _TrackedBot(Bot):
     queue_manager.py, etc.
 
     A plain instance-attribute monkey-patch (`app.bot.send_message = ...`)
-    does NOT work here: PTB's Bot uses __slots__, so assigning to the
-    instance raises AttributeError. Subclassing is the supported way to
-    override behaviour.
+    does NOT work here: PTB's Bot uses __slots__ and a strict __setattr__,
+    so assigning to the instance raises AttributeError. Subclassing to
+    override the method works, but storing state also requires going
+    through the module-level `_bot_data_ref` above rather than `self.x = ...`.
     """
-
-    # `bot_data` is assigned onto the instance after construction (see main());
-    # _TrackedBot has no __slots__ of its own, so the subclass instance gets a
-    # normal __dict__ and this plain attribute assignment works fine.
-    bot_data: dict | None = None
 
     async def send_message(self, chat_id=None, *args, **kwargs):
         message = await super().send_message(chat_id, *args, **kwargs)
-        if chat_id is not None and message is not None and self.bot_data is not None:
-            chat_cleanup.track(self.bot_data, chat_id, message.message_id)
+        if chat_id is not None and message is not None and _bot_data_ref is not None:
+            chat_cleanup.track(_bot_data_ref, chat_id, message.message_id)
         return message
 
 
@@ -143,7 +148,8 @@ def main() -> None:
         .post_shutdown(post_shutdown)
         .build()
     )
-    tracked_bot.bot_data = app.bot_data
+    global _bot_data_ref
+    _bot_data_ref = app.bot_data
 
     # /ping — deployment verification (registered before ConversationHandlers so
     # it is always reachable regardless of the user's conversation state)
