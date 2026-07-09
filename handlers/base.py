@@ -10,7 +10,10 @@ Navigation pattern used throughout the bot:
 from __future__ import annotations
 
 import logging
+from datetime import timezone as _dt_timezone
 from typing import Any
+
+import pytz
 
 from telegram import (
     Bot,
@@ -179,6 +182,22 @@ _STATUS_ICON: dict[str, str] = {
 }
 
 
+def _format_next_run(next_run, tz_str: str) -> str:
+    """Format a UTC `next_run_at` datetime in the post's own saved timezone."""
+    if next_run is None:
+        return "—"
+    if next_run.tzinfo is None:
+        next_run = next_run.replace(tzinfo=_dt_timezone.utc)
+    try:
+        zone = pytz.timezone(tz_str) if tz_str != "UTC" else _dt_timezone.utc
+    except pytz.exceptions.UnknownTimeZoneError:
+        zone = _dt_timezone.utc
+        tz_str = "UTC"
+    local_dt = next_run.astimezone(zone)
+    label = "UTC" if tz_str == "UTC" else tz_str.split("/")[-1].replace("_", " ")
+    return local_dt.strftime(f"%d/%m %H:%M {label}")
+
+
 def _posts_list_text(posts: list[dict], page: int) -> str:
     total     = len(posts)
     n_pages   = max(1, (total + POSTS_PER_PAGE - 1) // POSTS_PER_PAGE)
@@ -191,7 +210,8 @@ def _posts_list_text(posts: list[dict], page: int) -> str:
         rec     = post.get("recurrence", {})
         rec_type = rec.get("type", "once")
         next_run = rec.get("next_run_at")
-        next_str = next_run.strftime("%d/%m %H:%M UTC") if next_run else "—"
+        tz_str   = post.get("timezone", "UTC")
+        next_str = _format_next_run(next_run, tz_str)
         icon    = _STATUS_ICON.get(status, "❓")
         lines.append(f"{idx}. {icon} Chat `{chat_id}` · `{rec_type}` · {next_str}")
     return "\n".join(lines)
