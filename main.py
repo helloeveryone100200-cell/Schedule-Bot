@@ -15,6 +15,7 @@ import asyncio
 import logging
 
 from telegram import Bot, Update
+from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -56,6 +57,26 @@ async def cmd_ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
             await update.message.reply_text("pong (error: " + str(exc) + ")")
         except Exception:
             pass
+
+
+async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """/id — reply with this chat's title/ID and the sender's user ID."""
+    if not update.message or not update.effective_chat or not update.effective_user:
+        return
+    chat = update.effective_chat
+    user = update.effective_user
+    title = chat.title or chat.first_name or "Private Chat"
+    try:
+        await update.message.reply_text(
+            f"ℹ️ *Group Help*\n"
+            f"{title}\n\n"
+            f"`/id`\n\n"
+            f"*CHAT ID:* `{chat.id}`\n"
+            f"*YOUR ID:* `{user.id}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+    except Exception as exc:
+        logger.exception("cmd_id failed: %s", exc)
 
 
 async def post_init(application: Application) -> None:
@@ -154,6 +175,7 @@ def main() -> None:
     # /ping — deployment verification (registered before ConversationHandlers so
     # it is always reachable regardless of the user's conversation state)
     app.add_handler(CommandHandler("ping", cmd_ping))
+    app.add_handler(CommandHandler("id", cmd_id))
 
     # Chat cleanup tracking: record incoming messages/callbacks at low
     # priority (group=-1) so they don't interfere with normal handler
