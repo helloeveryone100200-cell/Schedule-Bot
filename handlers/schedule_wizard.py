@@ -1024,11 +1024,13 @@ async def cb_confirm_post(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         post_id = await insert_post(doc)
     except Exception as exc:
         logger.exception("Failed to save post: %s", exc)
+        _clear(context)
+        chat_id = query.message.chat_id
+        await chat_cleanup.cleanup(context, chat_id, keep_message_id=query.message.message_id)
         await query.edit_message_text(
             f"❌ Failed to save post: `{exc}`\n\nTry again or contact support.",
             parse_mode=ParseMode.MARKDOWN,
         )
-        _clear(context)
         return ConversationHandler.END
 
     _clear(context)

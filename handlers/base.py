@@ -346,13 +346,15 @@ async def cmd_cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data.clear()
     if update.message:
         chat_id = update.message.chat_id
-        # /cancel is itself typed by the user — sweep everything before it too,
-        # then send the confirmation as a fresh (kept) message.
-        await chat_cleanup.cleanup(context, chat_id, keep_message_id=update.message.message_id)
-        await update.message.reply_text(
+        # Send the confirmation FIRST and keep *that* message — sweeping
+        # everything else including the user's own "/cancel" text — so only
+        # one message (the confirmation) remains, matching cb_cancel's
+        # behaviour.
+        final = await update.message.reply_text(
             "❌ *Cancelled.* Use /start to begin again.",
             parse_mode=ParseMode.MARKDOWN,
         )
+        await chat_cleanup.cleanup(context, chat_id, keep_message_id=final.message_id)
     return ConversationHandler.END
 
 

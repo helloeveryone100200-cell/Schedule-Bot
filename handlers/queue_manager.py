@@ -490,8 +490,10 @@ async def cb_qm_confirm_add(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         post_id = await insert_post(doc)
     except Exception as exc:
         logger.exception("Queue add failed: %s", exc)
-        await query.edit_message_text(f"❌ Error: `{exc}`", parse_mode=ParseMode.MARKDOWN)
         _clear(context)
+        chat_id_for_cleanup = query.message.chat_id
+        await chat_cleanup.cleanup(context, chat_id_for_cleanup, keep_message_id=query.message.message_id)
+        await query.edit_message_text(f"❌ Error: `{exc}`", parse_mode=ParseMode.MARKDOWN)
         return ConversationHandler.END
 
     _clear(context)
