@@ -22,6 +22,7 @@ import logging
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Update
 from telegram.constants import ParseMode
 from telegram.error import Forbidden, TelegramError
+from telegram.helpers import escape_markdown
 from telegram.ext import (
     CallbackQueryHandler,
     CommandHandler,
@@ -177,17 +178,37 @@ async def cb_owner_status(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return OWNER_MENU
 
 
-async def _render_id_list(query, ids: list[int], page: int, label: str, page_cb_prefix: str) -> None:
-    total = len(ids)
+def _escape_md(text: str) -> str:
+    """Escape characters that break Telegram's legacy Markdown parser."""
+    return escape_markdown(text, version=1)
+
+
+async def _render_id_list(query, items: list[dict], page: int, label: str, page_cb_prefix: str, kind: str) -> None:
+    total = len(items)
     n_pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
     page = max(0, min(page, n_pages - 1))
     start = page * PAGE_SIZE
     end = min(start + PAGE_SIZE, total)
-    chunk = ids[start:end]
+    chunk = items[start:end]
 
     lines = [f"{label} (page {page + 1}/{n_pages}, total {total})\n"]
-    for idx, item_id in enumerate(chunk, start=start + 1):
-        lines.append(f"{idx}. `{item_id}`")
+    for idx, item in enumerate(chunk, start=start + 1):
+        if kind == "user":
+            item_id = item["user_id"]
+            username = item.get("username")
+            name = item.get("first_name") or ""
+            if username:
+                handle = f"@{_escape_md(username)}"
+            elif name:
+                handle = _escape_md(name)
+            else:
+                handle = "_no username_"
+            lines.append(f"{idx}. `{item_id}` — {handle}")
+        else:
+            item_id = item["chat_id"]
+            title = item.get("title")
+            handle = _escape_md(title) if title else "_untitled_"
+            lines.append(f"{idx}. `{item_id}` — {handle}")
     if not chunk:
         lines.append("_None yet._")
 
@@ -207,7 +228,7 @@ async def _render_id_list(query, ids: list[int], page: int, label: str, page_cb_
 
 
 async def cb_owner_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    from database import list_user_ids
+    from database import list_users
 
     query = update.callback_query
     if not query or not query.from_user:
@@ -217,19 +238,19 @@ async def cb_owner_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return ConversationHandler.END
     await query.answer()
     try:
-        ids = await list_user_ids()
+        items = await list_users()
     except Exception as exc:
-        logger.exception("list_user_ids failed: %s", exc)
+        logger.exception("list_users failed: %s", exc)
         await query.edit_message_text(
             f"❌ Error: `{exc}`", parse_mode=ParseMode.MARKDOWN, reply_markup=_back_only_keyboard()
         )
         return OWNER_MENU
-    await _render_id_list(query, ids, 0, "👤 *User List*", CB_OWNER_USERS_PAGE)
+    await _render_id_list(query, items, 0, "👤 *User List*", CB_OWNER_USERS_PAGE, kind="user")
     return OWNER_LIST
 
 
 async def cb_owner_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    from database import list_user_ids
+    from database import list_users
 
     query = update.callback_query
     if not query or not query.from_user:
@@ -240,13 +261,13 @@ async def cb_owner_users_page(update: Update, context: ContextTypes.DEFAULT_TYPE
     page_str = (query.data or "").replace(CB_OWNER_USERS_PAGE, "")
     page = int(page_str) if page_str.isdigit() else 0
     await query.answer()
-    ids = await list_user_ids()
-    await _render_id_list(query, ids, page, "👤 *User List*", CB_OWNER_USERS_PAGE)
+    items = await list_users()
+    await _render_id_list(query, items, page, "👤 *User List*", CB_OWNER_USERS_PAGE, kind="user")
     return OWNER_LIST
 
 
 async def cb_owner_groups(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    from database import list_group_ids
+    from database import list_groups
 
     query = update.callback_query
     if not query or not query.from_user:
@@ -256,19 +277,19 @@ async def cb_owner_groups(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         return ConversationHandler.END
     await query.answer()
     try:
-        ids = await list_group_ids()
+        items = await list_groups()
     except Exception as exc:
-        logger.exception("list_group_ids failed: %s", exc)
+        logger.exception("list_groups failed: %s", exc)
         await query.edit_message_text(
             f"❌ Error: `{exc}`", parse_mode=ParseMode.MARKDOWN, reply_markup=_back_only_keyboard()
         )
         return OWNER_MENU
-    await _render_id_list(query, ids, 0, "👥 *Group List*", CB_OWNER_GROUPS_PAGE)
+    await _render_id_list(query, items, 0, "👥 *Group List*", CB_OWNER_GROUPS_PAGE, kind="group")
     return OWNER_LIST
 
 
 async def cb_owner_groups_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    from database import list_group_ids
+    from database import list_groups
 
     query = update.callback_query
     if not query or not query.from_user:
@@ -279,8 +300,8 @@ async def cb_owner_groups_page(update: Update, context: ContextTypes.DEFAULT_TYP
     page_str = (query.data or "").replace(CB_OWNER_GROUPS_PAGE, "")
     page = int(page_str) if page_str.isdigit() else 0
     await query.answer()
-    ids = await list_group_ids()
-    await _render_id_list(query, ids, page, "👥 *Group List*", CB_OWNER_GROUPS_PAGE)
+    items = await list_groups()
+    await _render_id_list(query, items, page, "👥 *Group List*", CB_OWNER_GROUPS_PAGE, kind="group")
     return OWNER_LIST
 
 
@@ -299,7 +320,7 @@ async def cb_owner_bcast_all_start(update: Update, context: ContextTypes.DEFAULT
     await query.edit_message_text(
         "📣 *Broadcast to All Users*\n\n"
         "Send the message you want delivered to every tracked user "
-        "(text only). Send /cancel_owner to abort.",
+        "(text only). Send `/cancel_owner` to abort.",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=_cancel_only_keyboard(),
     )
@@ -355,7 +376,7 @@ async def cb_owner_bcast_one_start(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     await query.edit_message_text(
         "🎯 *Broadcast to One User*\n\n"
-        "Send the numeric *user ID* to message. Send /cancel_owner to abort.",
+        "Send the numeric *user ID* to message. Send `/cancel_owner` to abort.",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=_cancel_only_keyboard(),
     )

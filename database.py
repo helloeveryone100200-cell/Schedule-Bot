@@ -613,6 +613,20 @@ async def list_group_ids() -> list[int]:
     return [doc["chat_id"] async for doc in cursor]
 
 
+async def list_users() -> list[dict]:
+    """Full records (id + username + first_name) for the owner panel's User List."""
+    db = await get_db()
+    cursor = db[COL_USERS].find({}, {"user_id": 1, "username": 1, "first_name": 1})
+    return [doc async for doc in cursor]
+
+
+async def list_groups() -> list[dict]:
+    """Full records (id + title + chat_type) for the owner panel's Group List."""
+    db = await get_db()
+    cursor = db[COL_GROUPS].find({}, {"chat_id": 1, "title": 1, "chat_type": 1})
+    return [doc async for doc in cursor]
+
+
 async def get_bot_stats() -> dict[str, int]:
     """Aggregate counts used by the owner panel's Status screen."""
     db = await get_db()
