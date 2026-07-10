@@ -33,6 +33,8 @@ _db: AsyncIOMotorDatabase | None = None
 COL_POSTS = "scheduled_posts"
 COL_QUEUE_SLOTS = "queue_slots"
 COL_MEDIA_POOLS = "media_pools"
+COL_USERS = "bot_users"
+COL_GROUPS = "bot_groups"
 
 # ---------------------------------------------------------------------------
 # Valid enum values (used in validation helpers)
@@ -154,6 +156,17 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
             sparse=True,
             name="ttl_tasks_expire",
         ),
+    ])
+
+    # ── bot_users / bot_groups (owner-panel tracking) ───────────────────────
+    users: AsyncIOMotorCollection = db[COL_USERS]
+    await users.create_indexes([
+        IndexModel([("user_id", ASCENDING)], unique=True),
+    ])
+
+    groups: AsyncIOMotorCollection = db[COL_GROUPS]
+    await groups.create_indexes([
+        IndexModel([("chat_id", ASCENDING)], unique=True),
     ])
 
     logger.info("MongoDB indexes verified/created.")
@@ -540,3 +553,104 @@ async def reset_media_pool(user_id: int, chat_id: int) -> None:
             },
         },
     )
+
+
+# ---------------------------------------------------------------------------
+# Owner-panel tracking & tools — bot_users / bot_groups
+# ---------------------------------------------------------------------------
+
+async def upsert_user(user_id: int, username: str | None, first_name: str | None) -> None:
+    """Record/refresh a known user (called opportunistically on any update)."""
+    db = await get_db()
+    now = datetime.now(tz=timezone.utc)
+    await db[COL_USERS].update_one(
+        {"user_id": user_id},
+        {
+            "$set": {
+                "username": username,
+                "first_name": first_name,
+                "last_seen_at": now,
+            },
+            "$setOnInsert": {"first_seen_at": now},
+        },
+        upsert=True,
+    )
+
+
+async def upsert_group(chat_id: int, title: str | None, chat_type: str) -> None:
+    """Record/refresh a known group/channel (called opportunistically on any update)."""
+    db = await get_db()
+    now = datetime.now(tz=timezone.utc)
+    await db[COL_GROUPS].update_one(
+        {"chat_id": chat_id},
+        {
+            "$set": {
+                "title": title,
+                "chat_type": chat_type,
+                "last_seen_at": now,
+            },
+            "$setOnInsert": {"first_seen_at": now},
+        },
+        upsert=True,
+    )
+
+
+async def remove_group(chat_id: int) -> None:
+    """Drop a group record (e.g. the bot was kicked/removed)."""
+    db = await get_db()
+    await db[COL_GROUPS].delete_one({"chat_id": chat_id})
+
+
+async def list_user_ids() -> list[int]:
+    db = await get_db()
+    cursor = db[COL_USERS].find({}, {"user_id": 1})
+    return [doc["user_id"] async for doc in cursor]
+
+
+async def list_group_ids() -> list[int]:
+    db = await get_db()
+    cursor = db[COL_GROUPS].find({}, {"chat_id": 1})
+    return [doc["chat_id"] async for doc in cursor]
+
+
+async def get_bot_stats() -> dict[str, int]:
+    """Aggregate counts used by the owner panel's Status screen."""
+    db = await get_db()
+    users_count = await db[COL_USERS].count_documents({})
+    groups_count = await db[COL_GROUPS].count_documents({})
+    posts_total = await db[COL_POSTS].count_documents({})
+    pending = await db[COL_POSTS].count_documents({"status": "pending"})
+    paused = await db[COL_POSTS].count_documents({"status": "paused"})
+    posted = await db[COL_POSTS].count_documents({"status": "posted"})
+    failed = await db[COL_POSTS].count_documents({"status": "failed"})
+    queues = await db[COL_QUEUE_SLOTS].count_documents({})
+    pools = await db[COL_MEDIA_POOLS].count_documents({})
+    return {
+        "users": users_count,
+        "groups": groups_count,
+        "posts_total": posts_total,
+        "posts_pending": pending,
+        "posts_paused": paused,
+        "posts_posted": posted,
+        "posts_failed": failed,
+        "queues": queues,
+        "pools": pools,
+    }
+
+
+async def clear_all_bot_data() -> dict[str, int]:
+    """
+    Owner-only hard reset: wipes ALL scheduled posts, queue slots, and media
+    pools. Does NOT delete the tracked users/groups lists (those are needed
+    to keep broadcasting working). Returns the number of documents removed
+    from each collection so the caller can report exact numbers.
+    """
+    db = await get_db()
+    posts_res = await db[COL_POSTS].delete_many({})
+    queues_res = await db[COL_QUEUE_SLOTS].delete_many({})
+    pools_res = await db[COL_MEDIA_POOLS].delete_many({})
+    return {
+        "posts": posts_res.deleted_count,
+        "queues": queues_res.deleted_count,
+        "pools": pools_res.deleted_count,
+    }

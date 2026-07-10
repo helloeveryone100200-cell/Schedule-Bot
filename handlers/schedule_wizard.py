@@ -1039,8 +1039,11 @@ async def cb_confirm_post(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     await query.edit_message_text(
         f"✅ *Post scheduled successfully!*\n\n"
         f"🆔 Post ID: `{post_id}`\n\n"
-        "Use *My Posts* to manage it.",
+        "Use *My Posts* to manage it, or start another task below.",
         parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("🏠 Main Menu", callback_data=CB_MAIN_MENU)],
+        ]),
     )
     return ConversationHandler.END
 

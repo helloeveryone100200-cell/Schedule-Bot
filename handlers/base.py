@@ -31,6 +31,9 @@ from telegram.ext import (
     ConversationHandler,
 )
 
+from config import ADMIN_IDS
+from handlers.owner_panel import CB_OWNER_PANEL
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -91,8 +94,8 @@ def start_keyboard(bot: Bot) -> InlineKeyboardMarkup:
     ])
 
 
-def main_menu_keyboard() -> InlineKeyboardMarkup:
-    return InlineKeyboardMarkup([
+def main_menu_keyboard(bot: Bot | None = None, user_id: int | None = None) -> InlineKeyboardMarkup:
+    rows = [
         [
             InlineKeyboardButton("📅 Schedule New Post", callback_data=CB_SCHEDULE_NEW),
             InlineKeyboardButton("📋 My Posts",          callback_data=CB_MY_POSTS),
@@ -104,7 +107,26 @@ def main_menu_keyboard() -> InlineKeyboardMarkup:
         [
             InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL),
         ],
-    ])
+    ]
+    if bot is not None:
+        username = _bot_username(bot)
+        rows.append([
+            InlineKeyboardButton(
+                "➕ Add to my Group",
+                url=f"https://t.me/{username}?startgroup=true",
+            ),
+            InlineKeyboardButton(
+                "📢 Share Bot",
+                url=f"https://t.me/share/url?url=https://t.me/{username}&text=Check out this Advanced Scheduler Bot!",
+            ),
+        ])
+    # Owner-only entry point — never shown to non-admin users. Every
+    # owner_panel.py handler re-checks ADMIN_IDS anyway as defense in depth.
+    if user_id is not None and user_id in ADMIN_IDS:
+        rows.append([
+            InlineKeyboardButton("🛠 Owner Panel", callback_data=CB_OWNER_PANEL),
+        ])
+    return InlineKeyboardMarkup(rows)
 
 
 def nav_keyboard(back_data: str | None = None) -> InlineKeyboardMarkup:
@@ -298,10 +320,11 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Handle /start — send welcome message with main menu buttons."""
     if not update.message:
         return MAIN_MENU
+    user_id = update.effective_user.id if update.effective_user else None
     await update.message.reply_text(
         "🏠 *Main Menu* — choose an action:",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=main_menu_keyboard(),
+        reply_markup=main_menu_keyboard(context.bot, user_id),
     )
     return MAIN_MENU
 
@@ -328,10 +351,11 @@ async def cb_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if not query:
         return MAIN_MENU
     await query.answer()
+    user_id = query.from_user.id if query.from_user else None
     await query.edit_message_text(
         "🏠 *Main Menu* — choose an action:",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=main_menu_keyboard(),
+        reply_markup=main_menu_keyboard(context.bot, user_id),
     )
     return MAIN_MENU
 

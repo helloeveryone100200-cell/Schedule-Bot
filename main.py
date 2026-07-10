@@ -27,9 +27,10 @@ from telegram.ext import (
 )
 
 from config import MONGO_URI, PORT, TELEGRAM_BOT_TOKEN
-from database import close_db, connect_db
+from database import close_db, connect_db, upsert_group, upsert_user
 from handlers import chat_cleanup
 from handlers.base import build_base_conversation
+from handlers.owner_panel import build_owner_panel
 from handlers.queue_manager import build_media_pool, build_queue_manager
 from handlers.schedule_wizard import build_schedule_wizard
 from keep_alive import start_keep_alive
@@ -39,7 +40,7 @@ logger = logging.getLogger(__name__)
 
 # Increment this string whenever a significant update is deployed.
 # Users can type /ping to confirm which version is running on Render.
-BOT_VERSION = "2026-07-08-v3 | My Posts ✅ | Time-Window Next ✅ | Lifecycle retry ✅"
+BOT_VERSION = "2026-07-10-v4 | /id ✅ | Owner Panel ✅ | Main Menu everywhere ✅"
 
 # Module-level scheduler reference so post_shutdown can stop it
 _scheduler = None
@@ -105,11 +106,29 @@ async def _track_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     Low-priority (group=-1) tracker: records every incoming message/callback
     message id so chat_cleanup can later wipe an entire wizard's back-and-forth
     once it finishes. Never blocks or mutates the update.
+
+    Also opportunistically records the sending user / chat into MongoDB so the
+    owner panel's Status / User List / Group List / Broadcast tools have data
+    to work with. Best-effort — failures are logged and swallowed so a DB
+    hiccup never breaks normal bot flow.
     """
     chat = update.effective_chat
     msg = update.effective_message
     if chat is not None and msg is not None:
         chat_cleanup.track(context.application.bot_data, chat.id, msg.message_id)
+
+    user = update.effective_user
+    if user is not None and not user.is_bot:
+        try:
+            await upsert_user(user.id, user.username, user.first_name)
+        except Exception:
+            logger.exception("upsert_user tracking failed for user_id=%s", user.id)
+
+    if chat is not None and chat.type in ("group", "supergroup", "channel"):
+        try:
+            await upsert_group(chat.id, chat.title, chat.type)
+        except Exception:
+            logger.exception("upsert_group tracking failed for chat_id=%s", chat.id)
 
 
 # Holds a reference to the running Application's bot_data dict. Populated once
@@ -187,6 +206,7 @@ def main() -> None:
     app.add_handler(build_schedule_wizard())
     app.add_handler(build_queue_manager())
     app.add_handler(build_media_pool())
+    app.add_handler(build_owner_panel())
     app.add_handler(build_base_conversation())
 
     logger.info("Bot starting — polling for updates…")
