@@ -1028,7 +1028,7 @@ async def cb_confirm_post(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         chat_id = query.message.chat_id
         await chat_cleanup.cleanup(context, chat_id, keep_message_id=query.message.message_id)
         await query.edit_message_text(
-            f"❌ Failed to save post: `{exc}`\n\nTry again or contact support.",
+            f"❌ Failed to save post: `{str(exc).replace(chr(96), chr(39))}`\n\nTry again or contact support.",
             parse_mode=ParseMode.MARKDOWN,
         )
         return ConversationHandler.END

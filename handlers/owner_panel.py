@@ -154,7 +154,7 @@ async def cb_owner_status(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as exc:
         logger.exception("get_bot_stats failed: %s", exc)
         await query.edit_message_text(
-            f"❌ Error loading status: `{exc}`",
+            f"❌ Error loading status: `{_safe_exc(exc)}`",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=_back_only_keyboard(),
         )
@@ -181,6 +181,11 @@ async def cb_owner_status(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 def _escape_md(text: str) -> str:
     """Escape characters that break Telegram's legacy Markdown parser."""
     return escape_markdown(text, version=1)
+
+
+def _safe_exc(exc: Exception) -> str:
+    """Render an exception message for a Markdown code span without breaking it."""
+    return str(exc).replace("`", "'")
 
 
 async def _render_id_list(query, items: list[dict], page: int, label: str, page_cb_prefix: str, kind: str) -> None:
@@ -242,7 +247,7 @@ async def cb_owner_users(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     except Exception as exc:
         logger.exception("list_users failed: %s", exc)
         await query.edit_message_text(
-            f"❌ Error: `{exc}`", parse_mode=ParseMode.MARKDOWN, reply_markup=_back_only_keyboard()
+            f"❌ Error: `{_safe_exc(exc)}`", parse_mode=ParseMode.MARKDOWN, reply_markup=_back_only_keyboard()
         )
         return OWNER_MENU
     await _render_id_list(query, items, 0, "👤 *User List*", CB_OWNER_USERS_PAGE, kind="user")
@@ -281,7 +286,7 @@ async def cb_owner_groups(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     except Exception as exc:
         logger.exception("list_groups failed: %s", exc)
         await query.edit_message_text(
-            f"❌ Error: `{exc}`", parse_mode=ParseMode.MARKDOWN, reply_markup=_back_only_keyboard()
+            f"❌ Error: `{_safe_exc(exc)}`", parse_mode=ParseMode.MARKDOWN, reply_markup=_back_only_keyboard()
         )
         return OWNER_MENU
     await _render_id_list(query, items, 0, "👥 *Group List*", CB_OWNER_GROUPS_PAGE, kind="group")
@@ -420,7 +425,7 @@ async def msg_owner_bcast_one_send(update: Update, context: ContextTypes.DEFAULT
     except Forbidden:
         result = f"❌ `{target}` has blocked the bot or never started it."
     except TelegramError as exc:
-        result = f"❌ Failed to deliver to `{target}`: `{exc}`"
+        result = f"❌ Failed to deliver to `{target}`: `{_safe_exc(exc)}`"
 
     context.user_data.pop("_owner_bcast_target", None)
     await update.message.reply_text(result, parse_mode=ParseMode.MARKDOWN)
@@ -491,7 +496,7 @@ async def cb_owner_cleardata_yes(update: Update, context: ContextTypes.DEFAULT_T
     except Exception as exc:
         logger.exception("clear_all_bot_data failed: %s", exc)
         await query.edit_message_text(
-            f"❌ Clear failed: `{exc}`",
+            f"❌ Clear failed: `{_safe_exc(exc)}`",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=_back_only_keyboard(),
         )

@@ -64,9 +64,11 @@ async def cmd_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """/id — reply with this chat's title/ID and the sender's user ID."""
     if not update.message or not update.effective_chat or not update.effective_user:
         return
+    from telegram.helpers import escape_markdown
+
     chat = update.effective_chat
     user = update.effective_user
-    title = chat.title or chat.first_name or "Private Chat"
+    title = escape_markdown(chat.title or chat.first_name or "Private Chat", version=1)
     try:
         await update.message.reply_text(
             f"ℹ️ *Group Help*\n"

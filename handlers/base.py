@@ -281,7 +281,7 @@ async def _render_my_posts(
     except Exception as exc:
         logger.exception("get_user_posts failed: %s", exc)
         await query.edit_message_text(
-            f"❌ Error loading posts: `{exc}`",
+            f"❌ Error loading posts: `{str(exc).replace(chr(96), chr(39))}`",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup(
                 [[InlineKeyboardButton("🏠 Main Menu", callback_data=CB_MAIN_MENU)]]
