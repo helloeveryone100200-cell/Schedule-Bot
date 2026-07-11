@@ -95,6 +95,7 @@ CB_MP_RESET        = "mp:reset"
 CB_MP_RESET_YES    = "mp:reset_yes"
 CB_MP_CLEAR        = "mp:clear"
 CB_MP_CLEAR_YES    = "mp:clear_yes"
+CB_MP_SET_INTERVAL = "mp:set_interval"
 CB_MP_CONFIRM      = "mp:confirm"
 CB_MP_IU_MINUTES   = "mp:iu:minutes"
 CB_MP_IU_HOURS     = "mp:iu:hours"
@@ -605,10 +606,11 @@ async def cb_back_qm_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 def _mp_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add Item to Pool",    callback_data=CB_MP_ADD_ITEM)],
-        [InlineKeyboardButton("👁 View Pool Stats",    callback_data=CB_MP_VIEW)],
-        [InlineKeyboardButton("🔄 Reset Pool",         callback_data=CB_MP_RESET)],
-        [InlineKeyboardButton("🗑 Clear Pool",         callback_data=CB_MP_CLEAR)],
+        [InlineKeyboardButton("➕ Add Item to Pool",       callback_data=CB_MP_ADD_ITEM)],
+        [InlineKeyboardButton("⚙️ Set Posting Schedule",  callback_data=CB_MP_SET_INTERVAL)],
+        [InlineKeyboardButton("👁 View Pool Stats",       callback_data=CB_MP_VIEW)],
+        [InlineKeyboardButton("🔄 Reset Pool",            callback_data=CB_MP_RESET)],
+        [InlineKeyboardButton("🗑 Clear Pool",            callback_data=CB_MP_CLEAR)],
         [
             InlineKeyboardButton("🏠 Main Menu", callback_data=CB_MAIN_MENU),
             InlineKeyboardButton("❌ Cancel",    callback_data=CB_CANCEL),
@@ -639,9 +641,22 @@ async def enter_media_pool(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 async def cb_mp_add_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
+    _pm(context)["mode"] = "add"
     await _edit(query,
         "➕ *Add Item to Pool*\n\n"
         "First, type the *Chat ID* of the channel/group for this pool:",
+        nav_keyboard(back_data=CB_BACK_MP_MENU),
+    )
+    return MP_CHAT_ID
+
+
+async def cb_mp_set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    _pm(context)["mode"] = "interval"
+    await _edit(query,
+        "⚙️ *Set Posting Schedule*\n\n"
+        "Type the *Chat ID* of the pool you want to schedule:\n"
+        "_(Use /id in your group to get the Chat ID)_",
         nav_keyboard(back_data=CB_BACK_MP_MENU),
     )
     return MP_CHAT_ID
@@ -655,7 +670,20 @@ async def recv_mp_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await update.message.reply_text("⚠️ Enter a valid numeric Chat ID.", parse_mode=ParseMode.MARKDOWN)
         return MP_CHAT_ID
 
-    _pm(context)["mp_chat_id"] = chat_id
+    pm = _pm(context)
+    pm["mp_chat_id"] = chat_id
+
+    if pm.get("mode") == "interval":
+        await update.message.reply_text(
+            f"✅ Chat: `{chat_id}`\n\n"
+            "⏱ *How often should the bot post from this pool?*\n"
+            "Type a positive number (e.g. `6` for every 6 hours):",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=nav_keyboard(back_data=CB_BACK_MP_MENU),
+        )
+        return MP_SET_INTERVAL_VALUE
+
+    # Default: add-item flow
     await update.message.reply_text(
         f"✅ Chat: `{chat_id}`\n\n"
         "🎲 Now send the content item to add to the pool.\n"
@@ -727,6 +755,232 @@ async def recv_mp_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     )
     _clear_mp(context)
     return MP_MENU
+
+
+# ── Set Posting Schedule — wizard steps ──
+
+async def recv_mp_interval_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = (update.message.text or "").strip()
+    if not text.isdigit() or int(text) <= 0:
+        await update.message.reply_text(
+            "⚠️ Enter a positive number (e.g. `6` for every 6 hours).",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return MP_SET_INTERVAL_VALUE
+    _pm(context)["interval_value"] = int(text)
+    await update.message.reply_text(
+        f"✅ Interval: every *{text}* …\n\nNow choose the time unit:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_mp_interval_unit_keyboard(),
+    )
+    return MP_SET_INTERVAL_UNIT
+
+
+async def cb_mp_interval_unit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    unit_map = {
+        CB_MP_IU_MINUTES: ("minutes", "minute(s)"),
+        CB_MP_IU_HOURS:   ("hours",   "hour(s)"),
+        CB_MP_IU_DAYS:    ("days",    "day(s)"),
+    }
+    unit, label = unit_map.get(query.data, ("hours", "hour(s)"))
+    pm = _pm(context)
+    pm["interval_unit"] = unit
+    value = pm.get("interval_value", 1)
+    await query.answer()
+    await query.edit_message_text(
+        f"✅ Every *{value} {label}*\n\n"
+        "📅 When should the *first post* fire?\n"
+        "Type a time in `HH:MM` format (e.g. `09:00`), or type `now` to start immediately:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=nav_keyboard(back_data=CB_BACK_MP_IU),
+    )
+    return MP_SET_FIRST_RUN
+
+
+async def recv_mp_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = (update.message.text or "").strip().lower()
+    pm = _pm(context)
+    if text == "now":
+        pm["first_run"] = "now"
+    else:
+        t = _parse_hhmm(text)
+        if t is None:
+            await update.message.reply_text(
+                "⚠️ Enter a time in `HH:MM` format (e.g. `09:00`), or `now`.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return MP_SET_FIRST_RUN
+        pm["first_run"] = t
+    pm.setdefault("tz_page", 0)
+    await update.message.reply_text(
+        "🌍 *Select your timezone:*",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_mp_tz_keyboard(pm["tz_page"]),
+    )
+    return MP_SET_TIMEZONE
+
+
+async def cb_mp_tz_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    page_str = (query.data or "").replace(CB_MP_TZ_PAGE, "")
+    page = int(page_str) if page_str.isdigit() else 0
+    _pm(context)["tz_page"] = page
+    await query.answer()
+    await query.edit_message_text(
+        "🌍 *Select your timezone:*",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_mp_tz_keyboard(page),
+    )
+    return MP_SET_TIMEZONE
+
+
+async def cb_mp_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    tz_key = (query.data or "").replace("mptz:", "", 1)
+    try:
+        pytz.timezone(tz_key)
+    except pytz.exceptions.UnknownTimeZoneError:
+        await query.answer("Unknown timezone — please choose from the list.", show_alert=True)
+        return MP_SET_TIMEZONE
+    pm = _pm(context)
+    pm["timezone"] = tz_key
+    await query.answer()
+
+    chat_id   = pm.get("mp_chat_id", "?")
+    value     = pm.get("interval_value", "?")
+    unit      = pm.get("interval_unit", "?")
+    first_run = pm.get("first_run", "?")
+    tz_label  = next((lbl for k, lbl in TIMEZONES if k == tz_key), tz_key)
+    first_run_display = "Now (immediately)" if first_run == "now" else first_run
+
+    await query.edit_message_text(
+        f"📋 *Schedule Summary*\n\n"
+        f"🗂 Chat: `{chat_id}`\n"
+        f"⏱ Interval: every `{value} {unit}`\n"
+        f"🕐 First post: `{first_run_display}`\n"
+        f"🌍 Timezone: `{tz_label}`\n\n"
+        "Tap *✅ Confirm* to activate:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Confirm", callback_data=CB_MP_CONFIRM),
+                InlineKeyboardButton("⬅️ Back",   callback_data=CB_BACK_MP_FR),
+            ],
+        ]),
+    )
+    return MP_CONFIRM
+
+
+async def cb_mp_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    from database import build_scheduled_post, insert_post
+
+    query   = update.callback_query
+    pm      = _pm(context)
+    user_id: int = query.from_user.id  # type: ignore[union-attr]
+    chat_id  = pm.get("mp_chat_id")
+    value    = pm.get("interval_value")
+    unit     = pm.get("interval_unit")
+    first_run = pm.get("first_run")
+    tz_str   = pm.get("timezone", "UTC")
+
+    if not all([chat_id, value, unit, first_run]):
+        await query.answer("Missing data — please start again.", show_alert=True)
+        return MP_MENU
+
+    await query.answer("Saving…")
+
+    try:
+        zone = pytz.timezone(tz_str)
+    except pytz.exceptions.UnknownTimeZoneError:
+        zone = timezone.utc
+
+    now_local = datetime.now(tz=zone)
+    if first_run == "now":
+        first_run_dt = datetime.now(tz=timezone.utc) + timedelta(minutes=1)
+    else:
+        h, mi = int(first_run[:2]), int(first_run[3:])
+        candidate = now_local.replace(hour=h, minute=mi, second=0, microsecond=0)
+        if candidate <= now_local:
+            candidate += timedelta(days=1)
+        first_run_dt = candidate.astimezone(timezone.utc)
+
+    try:
+        doc = build_scheduled_post(
+            user_id=user_id,
+            chat_id=chat_id,
+            recurrence_type="pool",
+            interval_value=value,
+            interval_unit=unit,
+            next_run_at=first_run_dt,
+            timezone_str=tz_str,
+        )
+        post_id = await insert_post(doc)
+    except Exception as exc:
+        logger.exception("media pool schedule save failed: %s", exc)
+        await query.edit_message_text(
+            f"❌ Failed to save schedule: `{str(exc).replace(chr(96), chr(39))}`",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_mp_menu_keyboard(),
+        )
+        _clear_mp(context)
+        return MP_MENU
+
+    tz_label = next((lbl for k, lbl in TIMEZONES if k == tz_str), tz_str)
+    first_run_display = "Now (in ~1 min)" if first_run == "now" else first_run
+    _clear_mp(context)
+    await query.edit_message_text(
+        f"✅ *Posting schedule saved!*\n\n"
+        f"🗂 Chat: `{chat_id}`\n"
+        f"⏱ Every `{value} {unit}`, first at `{first_run_display}` ({tz_label})\n"
+        f"🆔 Schedule ID: `{post_id}`\n\n"
+        "The bot will now pick a random item from this pool at each interval. "
+        "Make sure you have items added via *Add Item to Pool*.",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_mp_menu_keyboard(),
+    )
+    return MP_MENU
+
+
+# ── Back-navigation for interval wizard ──
+
+async def cb_back_mp_interval_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back from interval-value step → return to MP menu."""
+    query = update.callback_query
+    _clear_mp(context)
+    await _edit(query,
+        "🎲 *Media Pool — Random Shuffler*\n\nWhat would you like to do?",
+        _mp_menu_keyboard(),
+    )
+    return MP_MENU
+
+
+async def cb_back_mp_interval_unit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back from interval-unit (unit picker) → re-ask interval value."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "⏱ *How often should the bot post from this pool?*\n"
+        "Type a positive number (e.g. `6` for every 6 hours):",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=nav_keyboard(back_data=CB_BACK_MP_MENU),
+    )
+    return MP_SET_INTERVAL_VALUE
+
+
+async def cb_back_mp_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back from first-run or timezone step → re-show unit picker."""
+    query = update.callback_query
+    pm = _pm(context)
+    value = pm.get("interval_value", "?")
+    unit  = pm.get("interval_unit", "?")
+    await query.answer()
+    await query.edit_message_text(
+        f"✅ Every *{value} {unit}*\n\nNow choose the time unit:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_mp_interval_unit_keyboard(),
+    )
+    return MP_SET_INTERVAL_UNIT
 
 
 # ── View Pool Stats ──
@@ -934,13 +1188,14 @@ def build_media_pool() -> ConversationHandler:
         entry_points=[CallbackQueryHandler(enter_media_pool, pattern=f"^{CB_MEDIA_POOL}$")],
         states={
             MP_MENU: [
-                CallbackQueryHandler(cb_mp_add_item,  pattern=f"^{CB_MP_ADD_ITEM}$"),
-                CallbackQueryHandler(cb_mp_view,      pattern=f"^{CB_MP_VIEW}$"),
-                CallbackQueryHandler(cb_mp_reset,     pattern=f"^{CB_MP_RESET}$"),
-                CallbackQueryHandler(cb_mp_reset_yes, pattern=f"^{CB_MP_RESET_YES}$"),
-                CallbackQueryHandler(cb_mp_clear,     pattern=f"^{CB_MP_CLEAR}$"),
-                CallbackQueryHandler(cb_mp_clear_yes, pattern=f"^{CB_MP_CLEAR_YES}$"),
-                CallbackQueryHandler(cb_back_mp_menu, pattern=f"^{CB_BACK_MP_MENU}$"),
+                CallbackQueryHandler(cb_mp_add_item,      pattern=f"^{CB_MP_ADD_ITEM}$"),
+                CallbackQueryHandler(cb_mp_set_interval,  pattern=f"^{CB_MP_SET_INTERVAL}$"),
+                CallbackQueryHandler(cb_mp_view,          pattern=f"^{CB_MP_VIEW}$"),
+                CallbackQueryHandler(cb_mp_reset,         pattern=f"^{CB_MP_RESET}$"),
+                CallbackQueryHandler(cb_mp_reset_yes,     pattern=f"^{CB_MP_RESET_YES}$"),
+                CallbackQueryHandler(cb_mp_clear,         pattern=f"^{CB_MP_CLEAR}$"),
+                CallbackQueryHandler(cb_mp_clear_yes,     pattern=f"^{CB_MP_CLEAR_YES}$"),
+                CallbackQueryHandler(cb_back_mp_menu,     pattern=f"^{CB_BACK_MP_MENU}$"),
             ],
             MP_CHAT_ID: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_mp_chat_id),
@@ -954,6 +1209,32 @@ def build_media_pool() -> ConversationHandler:
                     recv_mp_item,
                 ),
                 CallbackQueryHandler(cb_back_mp_menu, pattern=f"^{CB_BACK_MP_MENU}$"),
+            ],
+            MP_SET_INTERVAL_VALUE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recv_mp_interval_value),
+                CallbackQueryHandler(cb_back_mp_interval_value, pattern=f"^{CB_BACK_MP_IV}$"),
+                CallbackQueryHandler(cb_back_mp_menu,           pattern=f"^{CB_BACK_MP_MENU}$"),
+            ],
+            MP_SET_INTERVAL_UNIT: [
+                CallbackQueryHandler(cb_mp_interval_unit,       pattern=f"^({CB_MP_IU_MINUTES}|{CB_MP_IU_HOURS}|{CB_MP_IU_DAYS})$"),
+                CallbackQueryHandler(cb_back_mp_interval_unit,  pattern=f"^{CB_BACK_MP_IU}$"),
+                CallbackQueryHandler(cb_back_mp_menu,           pattern=f"^{CB_BACK_MP_MENU}$"),
+            ],
+            MP_SET_FIRST_RUN: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recv_mp_first_run),
+                CallbackQueryHandler(cb_back_mp_first_run, pattern=f"^{CB_BACK_MP_FR}$"),
+                CallbackQueryHandler(cb_back_mp_menu,      pattern=f"^{CB_BACK_MP_MENU}$"),
+            ],
+            MP_SET_TIMEZONE: [
+                CallbackQueryHandler(cb_mp_tz,      pattern=mp_tz_pattern),
+                CallbackQueryHandler(cb_mp_tz_page, pattern=mp_tzp_pattern),
+                CallbackQueryHandler(cb_back_mp_first_run, pattern=f"^{CB_BACK_MP_FR}$"),
+                CallbackQueryHandler(cb_back_mp_menu,      pattern=f"^{CB_BACK_MP_MENU}$"),
+            ],
+            MP_CONFIRM: [
+                CallbackQueryHandler(cb_mp_confirm,        pattern=f"^{CB_MP_CONFIRM}$"),
+                CallbackQueryHandler(cb_back_mp_first_run, pattern=f"^{CB_BACK_MP_FR}$"),
+                CallbackQueryHandler(cb_back_mp_menu,      pattern=f"^{CB_BACK_MP_MENU}$"),
             ],
         },
         fallbacks=[
