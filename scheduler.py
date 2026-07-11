@@ -154,28 +154,37 @@ async def _send_post(bot: Bot, post: dict[str, Any]) -> Message | None:
     Returns the sent Message, or None on unrecoverable error.
     Raises re-raiseable exceptions for transient failures so the caller can log them.
     """
+    from telegram import InlineKeyboardButton as IKB, InlineKeyboardMarkup as IKM
+
     chat_id: int       = post["chat_id"]
     content: dict      = post.get("content", {})
     text: str | None   = content.get("text")
     file_id: str | None = content.get("media_file_id")
     media_type: str | None = content.get("media_type")
 
+    # Build reply_markup from stored inline_keyboard rows, if any
+    raw_kb = content.get("inline_keyboard") or []
+    reply_markup = (
+        IKM([[IKB(btn["text"], url=btn["url"]) for btn in row] for row in raw_kb])
+        if raw_kb else None
+    )
+
     try:
         if media_type == "photo":
-            return await bot.send_photo(chat_id, file_id, caption=text)
+            return await bot.send_photo(chat_id, file_id, caption=text, reply_markup=reply_markup)
         if media_type == "video":
-            return await bot.send_video(chat_id, file_id, caption=text)
+            return await bot.send_video(chat_id, file_id, caption=text, reply_markup=reply_markup)
         if media_type == "document":
-            return await bot.send_document(chat_id, file_id, caption=text)
+            return await bot.send_document(chat_id, file_id, caption=text, reply_markup=reply_markup)
         if media_type == "audio":
-            return await bot.send_audio(chat_id, file_id, caption=text)
+            return await bot.send_audio(chat_id, file_id, caption=text, reply_markup=reply_markup)
         if media_type == "animation":
-            return await bot.send_animation(chat_id, file_id, caption=text)
+            return await bot.send_animation(chat_id, file_id, caption=text, reply_markup=reply_markup)
         if media_type == "voice":
-            return await bot.send_voice(chat_id, file_id, caption=text)
+            return await bot.send_voice(chat_id, file_id, caption=text, reply_markup=reply_markup)
         # Default: plain text
         if text:
-            return await bot.send_message(chat_id, text)
+            return await bot.send_message(chat_id, text, reply_markup=reply_markup)
         logger.warning("Post %s has neither media nor text — skipping.", post.get("_id"))
         return None
 

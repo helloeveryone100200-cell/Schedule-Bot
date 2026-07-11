@@ -66,7 +66,8 @@ logger = logging.getLogger(__name__)
     WIZARD_SD_SECS,
     WIZARD_AP_HOURS,
     WIZARD_SUMMARY,
-) = range(10, 27)
+    WIZARD_INLINE_BTNS,
+) = range(10, 28)
 
 # ---------------------------------------------------------------------------
 # Callback-data constants (all ≤ 64 bytes)
@@ -83,6 +84,10 @@ CB_TW_ON         = "tw:on"
 CB_TW_OFF        = "tw:off"
 CB_LC_NEXT       = "lc:next"
 CB_CONFIRM_POST  = "confirm:post"
+CB_IB_SKIP       = "ib:skip"
+CB_IB_ADD        = "ib:add"
+CB_IB_DONE       = "ib:done"
+CB_BACK_INLINE_BTNS = "back:inline_btns"
 
 # Day-of-week toggle: "dow:0" … "dow:6"
 def _dow_cb(day: int) -> str:
@@ -107,6 +112,7 @@ CB_BACK_MAX_RUNS    = "back:max_runs"
 CB_BACK_TW          = "back:tw"
 CB_BACK_TW_START    = "back:tw_start"
 CB_BACK_LIFECYCLE   = "back:lifecycle"
+CB_BACK_CONTENT     = "back:content"
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -434,12 +440,123 @@ async def recv_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
     await msg.reply_text(
         "✅ Content saved.\n\n"
-        "🔁 *Step 3/9 — Recurrence Type*\n\n"
-        "How often should this post be sent?",
+        "🔘 *Step 2.5 — Inline Buttons (optional)*\n\n"
+        "Add clickable buttons below your post?\n"
+        "_(e.g. \"Visit Website\", \"Join Channel\")_",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_recurrence_keyboard(),
+        reply_markup=_inline_btns_keyboard(0),
+    )
+    return WIZARD_INLINE_BTNS
+
+
+# ---------------------------------------------------------------------------
+# Step 2.5 — Inline Buttons (optional)
+# ---------------------------------------------------------------------------
+
+def _inline_btns_keyboard(count: int) -> InlineKeyboardMarkup:
+    """Keyboard shown at the inline-button collection step."""
+    rows: list[list[InlineKeyboardButton]] = []
+    if count == 0:
+        rows.append([
+            InlineKeyboardButton("➕ Add Button",  callback_data=CB_IB_ADD),
+            InlineKeyboardButton("⏭ Skip",         callback_data=CB_IB_SKIP),
+        ])
+    else:
+        rows.append([
+            InlineKeyboardButton("➕ Add Another",  callback_data=CB_IB_ADD),
+            InlineKeyboardButton("✅ Done",          callback_data=CB_IB_DONE),
+        ])
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL)])
+    return InlineKeyboardMarkup(rows)
+
+
+async def cb_ib_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """User skips inline buttons — go straight to recurrence."""
+    query = update.callback_query
+    _w(context).setdefault("inline_buttons", [])
+    await _edit(query,
+        "🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
+        _recurrence_keyboard(),
     )
     return WIZARD_RECURRENCE
+
+
+async def cb_ib_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Prompt for one 'Label | URL' entry."""
+    query = update.callback_query
+    await query.answer()
+    count = len(_w(context).get("inline_buttons", []))
+    existing = _inline_btns_list_text(_w(context).get("inline_buttons", []))
+    await query.edit_message_text(
+        (f"✅ *Buttons so far:*\n{existing}\n\n" if existing else "") +
+        "📝 *Send the button in this format:*\n"
+        "`Label | URL`\n\n"
+        "_Example:_\n"
+        "`Visit Website | https://example.com`\n"
+        "`Join Channel | https://t.me/mychannel`",
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    return WIZARD_INLINE_BTNS
+
+
+async def recv_ib_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receive one or more 'Label | URL' lines from the user."""
+    text = (update.message.text or "").strip()
+    w = _w(context)
+    w.setdefault("inline_buttons", [])
+    added = 0
+    errors: list[str] = []
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        if "|" not in line:
+            errors.append(f"• `{line[:40]}` — missing `|`")
+            continue
+        label, _, url = line.partition("|")
+        label = label.strip()
+        url   = url.strip()
+        if not label:
+            errors.append(f"• _(empty label)_ `{url[:40]}`")
+            continue
+        if not (url.startswith("http://") or url.startswith("https://") or url.startswith("tg://")):
+            errors.append(f"• `{label}` — URL must start with http/https/tg://")
+            continue
+        if len(w["inline_buttons"]) >= 10:
+            errors.append("Maximum 10 buttons reached.")
+            break
+        w["inline_buttons"].append([{"text": label, "url": url}])
+        added += 1
+
+    existing = _inline_btns_list_text(w["inline_buttons"])
+    err_block = ("\n\n⚠️ *Skipped:*\n" + "\n".join(errors)) if errors else ""
+    await update.message.reply_text(
+        f"✅ *{added} button(s) added.*{err_block}\n\n"
+        f"*Buttons so far ({len(w['inline_buttons'])}/10):*\n{existing}\n\n"
+        "Add another or tap *✅ Done*:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_inline_btns_keyboard(len(w["inline_buttons"])),
+    )
+    return WIZARD_INLINE_BTNS
+
+
+async def cb_ib_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Finished adding buttons — move to recurrence."""
+    query = update.callback_query
+    await _edit(query,
+        "🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
+        _recurrence_keyboard(),
+    )
+    return WIZARD_RECURRENCE
+
+
+def _inline_btns_list_text(buttons: list) -> str:
+    """Format stored button rows into readable text for summary/prompts."""
+    lines = []
+    for row in buttons:
+        for btn in row:
+            lines.append(f"• {btn['text']} → {btn['url']}")
+    return "\n".join(lines) if lines else "_(none)_"
 
 
 # ---------------------------------------------------------------------------
@@ -964,7 +1081,8 @@ def _build_summary(w: dict[str, Any]) -> str:
         f"🕑 *Time Window:* {tw_line}\n"
         f"🗑 *Auto-Delete:* {ad}\n"
         f"💣 *Self-Destruct:* {sd}\n"
-        f"📌 *Auto-Pin:* {ap}\n\n"
+        f"📌 *Auto-Pin:* {ap}\n"
+        f"🔘 *Inline Buttons:* {_inline_btns_list_text(w.get('inline_buttons', []))}\n\n"
         "Tap *✅ Confirm* to schedule, *⬅️ Back* to edit, or *❌ Cancel* to abort."
     )
 
@@ -1020,6 +1138,7 @@ async def cb_confirm_post(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             self_destruct_after_seconds=w.get("sd_secs"),
             auto_pin_enabled=w.get("auto_pin", False),
             auto_pin_unpin_after_hours=w.get("ap_hours"),
+            inline_keyboard=w.get("inline_buttons") or None,
         )
         post_id = await insert_post(doc)
     except Exception as exc:
@@ -1160,6 +1279,12 @@ def build_schedule_wizard() -> ConversationHandler:
                      filters.VOICE) & ~filters.COMMAND,
                     recv_content,
                 ),
+            ],
+            WIZARD_INLINE_BTNS: [
+                CallbackQueryHandler(cb_ib_skip, pattern=f"^{CB_IB_SKIP}$"),
+                CallbackQueryHandler(cb_ib_add,  pattern=f"^{CB_IB_ADD}$"),
+                CallbackQueryHandler(cb_ib_done, pattern=f"^{CB_IB_DONE}$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recv_ib_entry),
             ],
             WIZARD_RECURRENCE: [
                 CallbackQueryHandler(cb_rec_once,     pattern=f"^{CB_REC_ONCE}$"),
