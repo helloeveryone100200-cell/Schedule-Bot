@@ -2,7 +2,7 @@
 handlers/schedule_wizard.py — Multi-step scheduling wizard.
 
 Wizard flow:
-  1.  WIZARD_CHAT_ID        — enter target chat/channel ID
+  1.  WIZARD_CHAT_ID        — pick target chat from group picker (or enter ID manually)
   2.  WIZARD_CONTENT        — send post content (text / media)
   3.  WIZARD_RECURRENCE     — choose recurrence type
         ├─ interval  → WIZARD_INTERVAL_VALUE → WIZARD_INTERVAL_UNIT
@@ -39,7 +39,7 @@ from telegram.ext import (
     filters,
 )
 
-from database import build_scheduled_post, insert_post
+from database import build_scheduled_post, insert_post, list_groups
 from handlers import chat_cleanup
 from handlers.base import CB_CANCEL, CB_MAIN_MENU, cmd_cancel, nav_keyboard, confirm_keyboard
 
@@ -114,6 +114,12 @@ CB_BACK_TW_START    = "back:tw_start"
 CB_BACK_LIFECYCLE   = "back:lifecycle"
 CB_BACK_CONTENT     = "back:content"
 
+# Group / chat picker (step 1)
+CB_CHAT_PICK_PREFIX = "chat:pick:"   # + str(chat_id)
+CB_CHAT_PAGE_PREFIX = "chat:page:"  # + str(page_num)
+CB_MANUAL_CHAT_ID   = "chat:manual"
+_CHAT_PAGE_SIZE     = 5
+
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
@@ -154,6 +160,55 @@ def _clear(context: ContextTypes.DEFAULT_TYPE) -> None:
 # ---------------------------------------------------------------------------
 # Keyboards
 # ---------------------------------------------------------------------------
+
+def _chat_list_keyboard(
+    groups: list[dict],
+    page: int,
+    bot_username: str,
+) -> InlineKeyboardMarkup:
+    """
+    Build the inline keyboard for the group/channel picker.
+    Each group gets its own button row.  Navigation + manual-entry rows follow.
+    """
+    rows: list[list[InlineKeyboardButton]] = []
+    total   = len(groups)
+    start   = page * _CHAT_PAGE_SIZE
+    end     = min(start + _CHAT_PAGE_SIZE, total)
+    page_groups = groups[start:end]
+
+    type_icon = {"channel": "📢", "supergroup": "👥", "group": "👥"}
+    for g in page_groups:
+        icon  = type_icon.get(g.get("chat_type", ""), "💬")
+        title = (g.get("title") or f"Chat {g['chat_id']}")[:35]
+        rows.append([InlineKeyboardButton(
+            f"{icon} {title}",
+            callback_data=f"{CB_CHAT_PICK_PREFIX}{g['chat_id']}",
+        )])
+
+    # Pagination
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"{CB_CHAT_PAGE_PREFIX}{page - 1}"))
+    if end < total:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"{CB_CHAT_PAGE_PREFIX}{page + 1}"))
+    if nav:
+        rows.append(nav)
+
+    rows.append([InlineKeyboardButton("✏️ Enter ID manually", callback_data=CB_MANUAL_CHAT_ID)])
+    rows.append([InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL)])
+    return InlineKeyboardMarkup(rows)
+
+
+def _no_groups_keyboard(bot_username: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "➕ Add Bot to a Group",
+            url=f"https://t.me/{bot_username}?startgroup=start",
+        )],
+        [InlineKeyboardButton("✏️ Enter ID manually", callback_data=CB_MANUAL_CHAT_ID)],
+        [InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL)],
+    ])
+
 
 def _recurrence_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
@@ -355,20 +410,108 @@ async def enter_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     _w(context)   # initialise empty wizard dict
     chat_cleanup.reset(context.application.bot_data, query.message.chat_id)
     chat_cleanup.track(context.application.bot_data, query.message.chat_id, query.message.message_id)
-    await _edit(
-        query,
+
+    bot_username = (await query.get_bot().get_me()).username
+    groups = await list_groups()
+
+    if groups:
+        await query.answer()
+        await query.edit_message_text(
+            f"📅 *Schedule New Post — Step 1/9*\n\n"
+            f"🗂 Choose the group or channel to post to:\n"
+            f"_(Showing {min(_CHAT_PAGE_SIZE, len(groups))} of {len(groups)} known chats)_",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_chat_list_keyboard(groups, 0, bot_username),
+        )
+    else:
+        await query.answer()
+        await query.edit_message_text(
+            "📅 *Schedule New Post — Step 1/9*\n\n"
+            "⚠️ *No groups or channels found.*\n\n"
+            "The bot hasn't been added to any group or channel yet.\n"
+            "Add the bot first, then come back to schedule a post.\n\n"
+            "_Or enter the Chat ID manually if you already have it._",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_no_groups_keyboard(bot_username),
+        )
+    return WIZARD_CHAT_ID
+
+
+# ---------------------------------------------------------------------------
+# Step 1 — Chat picker callbacks
+# ---------------------------------------------------------------------------
+
+async def cb_chat_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """User tapped a group button — save chat_id and title, move to content step."""
+    query = update.callback_query
+    raw = (query.data or "").replace(CB_CHAT_PICK_PREFIX, "", 1)
+    try:
+        chat_id = int(raw)
+    except ValueError:
+        await query.answer("Invalid selection.", show_alert=True)
+        return WIZARD_CHAT_ID
+
+    # Look up the title from DB record so we can show it in the summary
+    groups = await list_groups()
+    title_map = {g["chat_id"]: (g.get("title") or str(g["chat_id"])) for g in groups}
+    title = title_map.get(chat_id, str(chat_id))
+
+    w = _w(context)
+    w["chat_id"]    = chat_id
+    w["chat_title"] = title
+
+    await query.answer()
+    await query.edit_message_text(
+        f"✅ Selected: *{title}* (`{chat_id}`)\n\n"
+        "📝 *Step 2/9 — Post Content*\n\n"
+        "Send the content you want to post:\n"
+        "• Plain text\n"
+        "• Photo, video, document, or audio\n"
+        "• Media with a caption",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=nav_keyboard(back_data=None),
+    )
+    return WIZARD_CONTENT
+
+
+async def cb_chat_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Paginate the group list."""
+    query = update.callback_query
+    raw = (query.data or "").replace(CB_CHAT_PAGE_PREFIX, "", 1)
+    page = int(raw) if raw.isdigit() else 0
+    bot_username = (await query.get_bot().get_me()).username
+    groups = await list_groups()
+    total  = len(groups)
+    start  = page * _CHAT_PAGE_SIZE
+    shown  = min(_CHAT_PAGE_SIZE, total - start)
+    await query.answer()
+    await query.edit_message_text(
+        f"📅 *Schedule New Post — Step 1/9*\n\n"
+        f"🗂 Choose the group or channel to post to:\n"
+        f"_(Showing {shown} of {total} known chats)_",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_chat_list_keyboard(groups, page, bot_username),
+    )
+    return WIZARD_CHAT_ID
+
+
+async def cb_manual_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """User wants to type the chat ID manually."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
         "📅 *Schedule New Post — Step 1/9*\n\n"
-        "Send the *Chat ID* of the channel or group you want to post to.\n\n"
-        "💡 To get a chat ID: forward any message from the chat to @userinfobot "
-        "or add @username\\_to\\_id\\_bot to the group temporarily.\n\n"
-        "Type the ID below (example: `-1001234567890`):",
-        nav_keyboard(back_data=CB_MAIN_MENU),
+        "✏️ Type the *Chat ID* of the target channel or group:\n\n"
+        "💡 Forward any message from the chat to @userinfobot to find its ID.\n\n"
+        "Example: `-1001234567890`",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=nav_keyboard(back_data=CB_MAIN_MENU),
     )
     return WIZARD_CHAT_ID
 
 
 # ---------------------------------------------------------------------------
-# Step 1 — Chat ID
+# Step 1 — Chat ID (manual text entry fallback)
 # ---------------------------------------------------------------------------
 
 async def recv_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -1072,7 +1215,7 @@ def _build_summary(w: dict[str, Any]) -> str:
 
     return (
         "📋 *Post Summary — Please Review*\n\n"
-        f"🗂 *Chat ID:* `{w.get('chat_id')}`\n"
+        f"🗂 *Chat:* {w.get('chat_title') or ''} `{w.get('chat_id')}`\n"
         f"📝 *Content:* `{content_preview or '—'}`\n"
         f"🔁 *Recurrence:* {rec_line}\n"
         f"🕐 *First Run:* `{first_run}`\n"
@@ -1270,6 +1413,9 @@ def build_schedule_wizard() -> ConversationHandler:
         entry_points=[CallbackQueryHandler(enter_wizard, pattern=f"^{CB_SCHEDULE_NEW}$")],
         states={
             WIZARD_CHAT_ID: [
+                CallbackQueryHandler(cb_chat_pick,       pattern=r"^chat:pick:-?\d+$"),
+                CallbackQueryHandler(cb_chat_page,       pattern=r"^chat:page:\d+$"),
+                CallbackQueryHandler(cb_manual_chat_id,  pattern=f"^{CB_MANUAL_CHAT_ID}$"),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_chat_id),
             ],
             WIZARD_CONTENT: [
