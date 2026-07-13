@@ -19,6 +19,7 @@ from telegram.constants import ParseMode
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    ChatMemberHandler,
     CommandHandler,
     ContextTypes,
     MessageHandler,
@@ -27,7 +28,7 @@ from telegram.ext import (
 )
 
 from config import MONGO_URI, PORT, TELEGRAM_BOT_TOKEN
-from database import close_db, connect_db, record_chat_activity, upsert_group, upsert_user
+from database import close_db, connect_db, record_chat_activity, remove_group, upsert_group, upsert_user
 from handlers import chat_cleanup
 from handlers.base import build_base_conversation
 from handlers.owner_panel import build_owner_panel
@@ -138,6 +139,34 @@ async def _track_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 logger.exception("record_chat_activity failed for chat_id=%s", chat.id)
 
 
+async def _on_bot_removed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """
+    Fired when the bot's membership status changes in any chat.
+    When the bot is kicked or leaves a group/channel, cascade-delete
+    every MongoDB document that belongs to that chat.
+    """
+    event = update.my_chat_member
+    if event is None:
+        return
+    new_status = event.new_chat_member.status  # "kicked", "left", "member", "administrator", …
+    if new_status not in ("kicked", "left"):
+        return
+
+    chat_id    = event.chat.id
+    chat_title = event.chat.title or str(chat_id)
+    logger.info("Bot removed from '%s' (%s) — purging all group data…", chat_title, chat_id)
+
+    try:
+        counts = await remove_group(chat_id)
+        logger.info(
+            "Purged data for chat %s: %s",
+            chat_id,
+            ", ".join(f"{k}={v}" for k, v in counts.items()),
+        )
+    except Exception:
+        logger.exception("Failed to purge data for chat %s after bot removal.", chat_id)
+
+
 # Holds a reference to the running Application's bot_data dict. Populated once
 # in main() after the Application is built. A module-level variable is used
 # (rather than an attribute on the Bot instance) because PTB's TelegramObject
@@ -208,6 +237,9 @@ def main() -> None:
     # dispatch order. Outgoing sends are tracked by _TrackedBot above.
     app.add_handler(MessageHandler(filters.ALL, _track_incoming), group=-1)
     app.add_handler(CallbackQueryHandler(_track_incoming), group=-1)
+
+    # Cascade-delete all group data when the bot is kicked or leaves
+    app.add_handler(ChatMemberHandler(_on_bot_removed, ChatMemberHandler.MY_CHAT_MEMBER))
 
     # Register ConversationHandlers — specific wizards first (higher priority)
     app.add_handler(build_schedule_wizard())

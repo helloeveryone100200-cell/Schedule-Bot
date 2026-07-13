@@ -605,10 +605,34 @@ async def upsert_group(chat_id: int, title: str | None, chat_type: str) -> None:
     )
 
 
-async def remove_group(chat_id: int) -> None:
-    """Drop a group record (e.g. the bot was kicked/removed)."""
+async def remove_group(chat_id: int) -> dict[str, int]:
+    """
+    Cascade-delete ALL data tied to a group (bot was kicked/removed).
+    Removes records from: bot_groups, scheduled_posts, queue_slots,
+    media_pools, and chat_activity — all in parallel.
+    Returns a dict of deleted document counts per collection.
+    """
     db = await get_db()
-    await db[COL_GROUPS].delete_one({"chat_id": chat_id})
+    (
+        groups_res,
+        posts_res,
+        queues_res,
+        pools_res,
+        activity_res,
+    ) = await asyncio.gather(
+        db[COL_GROUPS].delete_one({"chat_id": chat_id}),
+        db[COL_POSTS].delete_many({"chat_id": chat_id}),
+        db[COL_QUEUE_SLOTS].delete_many({"chat_id": chat_id}),
+        db[COL_MEDIA_POOLS].delete_many({"chat_id": chat_id}),
+        db[COL_ACTIVITY].delete_many({"chat_id": chat_id}),
+    )
+    return {
+        "groups":   groups_res.deleted_count,
+        "posts":    posts_res.deleted_count,
+        "queues":   queues_res.deleted_count,
+        "pools":    pools_res.deleted_count,
+        "activity": activity_res.deleted_count,
+    }
 
 
 async def list_user_ids() -> list[int]:
