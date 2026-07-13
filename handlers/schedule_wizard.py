@@ -648,10 +648,11 @@ async def cb_ib_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await query.edit_message_text(
         (f"✅ *Buttons so far:*\n{existing}\n\n" if existing else "") +
         "📝 *Send the button in this format:*\n"
-        "`Label | URL`\n\n"
-        "_Example:_\n"
+        "`Label | URL` or `Label | @username`\n\n"
+        "_Examples:_\n"
         "`Visit Website | https://example.com`\n"
-        "`Join Channel | https://t.me/mychannel`",
+        "`Join Channel | https://t.me/mychannel`\n"
+        "`Contact Admin | @adminusername`",
         parse_mode=ParseMode.MARKDOWN,
     )
     return WIZARD_INLINE_BTNS
@@ -677,8 +678,11 @@ async def recv_ib_entry(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         if not label:
             errors.append(f"• _(empty label)_ `{url[:40]}`")
             continue
+        # Allow @username shorthand → convert to t.me link
+        if url.startswith("@"):
+            url = "https://t.me/" + url[1:]
         if not (url.startswith("http://") or url.startswith("https://") or url.startswith("tg://")):
-            errors.append(f"• `{label}` — URL must start with http/https/tg://")
+            errors.append(f"• `{label}` — link must be a URL (http/https/tg://) or @username")
             continue
         if len(w["inline_buttons"]) >= 10:
             errors.append("Maximum 10 buttons reached.")
