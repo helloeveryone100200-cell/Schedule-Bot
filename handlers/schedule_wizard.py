@@ -39,7 +39,7 @@ from telegram.ext import (
     filters,
 )
 
-from database import build_scheduled_post, insert_post, list_groups
+from database import build_scheduled_post, insert_post, list_groups, get_best_hours
 from handlers import chat_cleanup
 from handlers.base import CB_CANCEL, CB_MAIN_MENU, cmd_cancel, nav_keyboard, confirm_keyboard
 
@@ -113,6 +113,10 @@ CB_BACK_TW          = "back:tw"
 CB_BACK_TW_START    = "back:tw_start"
 CB_BACK_LIFECYCLE   = "back:lifecycle"
 CB_BACK_CONTENT     = "back:content"
+
+# Smart scheduling
+CB_SMART_SUGGEST    = "smart:suggest"
+CB_SMART_PICK_PREFIX = "smart:pick:"   # + "HH:MM"
 
 # Group / chat picker (step 1)
 CB_CHAT_PICK_PREFIX = "chat:pick:"   # + str(chat_id)
@@ -207,6 +211,17 @@ def _no_groups_keyboard(bot_username: str) -> InlineKeyboardMarkup:
         )],
         [InlineKeyboardButton("✏️ Enter ID manually", callback_data=CB_MANUAL_CHAT_ID)],
         [InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL)],
+    ])
+
+
+def _first_run_keyboard(back_data: str) -> InlineKeyboardMarkup:
+    """First-run step keyboard — includes a 💡 Smart Suggest button."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("💡 Suggest Best Time", callback_data=CB_SMART_SUGGEST)],
+        [
+            InlineKeyboardButton("⬅️ Back",   callback_data=back_data),
+            InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL),
+        ],
     ])
 
 
@@ -714,8 +729,9 @@ async def cb_rec_once(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         "When should this post be sent?\n\n"
         "Type the date/time in one of these formats:\n"
         "• `HH:MM` — today at this time (e.g. `14:30`)\n"
-        "• `DD/MM/YYYY HH:MM` — specific date (e.g. `25/12/2025 09:00`)",
-        nav_keyboard(back_data=CB_BACK_RECURRENCE),
+        "• `DD/MM/YYYY HH:MM` — specific date (e.g. `25/12/2025 09:00`)\n\n"
+        "Or tap *💡 Suggest Best Time* to see active hours for this chat.",
+        _first_run_keyboard(CB_BACK_RECURRENCE),
     )
     return WIZARD_FIRST_RUN
 
@@ -792,8 +808,9 @@ async def cb_interval_unit(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         "🕐 *Step 4/9 — First Run Time*\n\n"
         "When should the *first* post fire?\n"
         "• `HH:MM` — today at this time\n"
-        "• `DD/MM/YYYY HH:MM` — specific date",
-        nav_keyboard(back_data=CB_BACK_INTERVAL_U),
+        "• `DD/MM/YYYY HH:MM` — specific date\n\n"
+        "Or tap *💡 Suggest Best Time* to see active hours for this chat.",
+        _first_run_keyboard(CB_BACK_INTERVAL_U),
     )
     return WIZARD_FIRST_RUN
 
@@ -828,8 +845,9 @@ async def cb_dow_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         "🕐 *Step 4/9 — First Run Time*\n\n"
         "When should the *first* post fire?\n"
         "• `HH:MM` — today at this time\n"
-        "• `DD/MM/YYYY HH:MM` — specific date",
-        nav_keyboard(back_data=CB_BACK_DOW),
+        "• `DD/MM/YYYY HH:MM` — specific date\n\n"
+        "Or tap *💡 Suggest Best Time* to see active hours for this chat.",
+        _first_run_keyboard(CB_BACK_DOW),
     )
     return WIZARD_FIRST_RUN
 
@@ -883,10 +901,103 @@ async def cb_back_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await _edit(query,
         "🕐 *Step 4/9 — First Run Time*\n\n"
         "• `HH:MM` — today at this time\n"
-        "• `DD/MM/YYYY HH:MM` — specific date",
-        nav_keyboard(back_data=back),
+        "• `DD/MM/YYYY HH:MM` — specific date\n\n"
+        "Or tap *💡 Suggest Best Time* to see active hours for this chat.",
+        _first_run_keyboard(back),
     )
     return WIZARD_FIRST_RUN
+
+
+# ---------------------------------------------------------------------------
+# Step 4 — Smart scheduling suggestion
+# ---------------------------------------------------------------------------
+
+_MEDAL = ["🥇", "🥈", "🥉"]
+
+
+async def cb_smart_suggest(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show top active hours for the chosen chat as tappable time buttons."""
+    query = update.callback_query
+    await query.answer()
+
+    chat_id = _w(context).get("chat_id")
+    results = await get_best_hours(chat_id, top_n=3) if chat_id else []
+
+    if not results:
+        await query.edit_message_text(
+            "💡 *Smart Scheduling*\n\n"
+            "⚠️ *Not enough data yet.*\n\n"
+            "The bot learns active hours by observing messages in the group. "
+            "Come back after the bot has been active there for a while.\n\n"
+            "For now, type the time manually:\n"
+            "• `HH:MM` — e.g. `09:00`\n"
+            "• `DD/MM/YYYY HH:MM` — e.g. `25/12/2025 09:00`",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("⬅️ Back", callback_data=CB_BACK_FIRST_RUN)],
+            ]),
+        )
+        return WIZARD_FIRST_RUN
+
+    total = sum(r["count"] for r in results)
+
+    def _label(count: int) -> str:
+        pct = count / total * 100 if total else 0
+        if pct >= 40:
+            return "high activity"
+        if pct >= 20:
+            return "good activity"
+        return "moderate activity"
+
+    lines = []
+    btn_rows: list[list[InlineKeyboardButton]] = []
+    for i, r in enumerate(results):
+        h = r["hour"]
+        time_str = f"{h:02d}:00"
+        medal = _MEDAL[i] if i < 3 else "•"
+        lines.append(f"{medal} *{time_str}* — {_label(r['count'])} ({r['count']} msgs)")
+        btn_rows.append([InlineKeyboardButton(
+            f"{medal} {time_str}",
+            callback_data=f"{CB_SMART_PICK_PREFIX}{time_str}",
+        )])
+
+    btn_rows.append([InlineKeyboardButton("✏️ Enter custom time", callback_data=CB_BACK_FIRST_RUN)])
+
+    await query.edit_message_text(
+        "💡 *Suggested Best Times*\n\n"
+        "Based on message activity in this chat:\n\n" +
+        "\n".join(lines) +
+        "\n\nTap a time to use it, or enter a custom time:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup(btn_rows),
+    )
+    return WIZARD_FIRST_RUN
+
+
+async def cb_smart_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """User tapped a suggested time — save it and move to timezone step."""
+    query = update.callback_query
+    time_str = (query.data or "").replace(CB_SMART_PICK_PREFIX, "", 1)  # "HH:MM"
+
+    w = _w(context)
+    tz_str = w.get("timezone", "UTC")
+    dt = _parse_run_time(time_str, tz_str)
+    if dt is None:
+        await query.answer("Could not parse time — please enter manually.", show_alert=True)
+        return WIZARD_FIRST_RUN
+
+    w["first_run"] = dt
+    w["first_run_raw"] = time_str
+
+    await query.answer()
+    await query.edit_message_text(
+        f"✅ First run: `{time_str}`\n\n"
+        "🌍 *Step 5/9 — Timezone*\n\n"
+        "Select your timezone so the time is interpreted correctly:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_timezone_keyboard(0),
+    )
+    return WIZARD_TIMEZONE
 
 
 # ---------------------------------------------------------------------------
@@ -1453,6 +1564,8 @@ def build_schedule_wizard() -> ConversationHandler:
             ],
             WIZARD_FIRST_RUN: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_first_run),
+                CallbackQueryHandler(cb_smart_suggest,      pattern=f"^{CB_SMART_SUGGEST}$"),
+                CallbackQueryHandler(cb_smart_pick,         pattern=r"^smart:pick:\d{2}:\d{2}$"),
                 CallbackQueryHandler(cb_back_first_run,     pattern=f"^{CB_BACK_FIRST_RUN}$"),
                 CallbackQueryHandler(cb_back_dow,           pattern=f"^{CB_BACK_DOW}$"),
                 CallbackQueryHandler(cb_back_interval_unit, pattern=f"^{CB_BACK_INTERVAL_U}$"),

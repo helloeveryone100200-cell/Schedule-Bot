@@ -35,6 +35,7 @@ COL_QUEUE_SLOTS = "queue_slots"
 COL_MEDIA_POOLS = "media_pools"
 COL_USERS = "bot_users"
 COL_GROUPS = "bot_groups"
+COL_ACTIVITY = "chat_activity"
 
 # ---------------------------------------------------------------------------
 # Valid enum values (used in validation helpers)
@@ -167,6 +168,13 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     groups: AsyncIOMotorCollection = db[COL_GROUPS]
     await groups.create_indexes([
         IndexModel([("chat_id", ASCENDING)], unique=True),
+    ])
+
+    # ── chat_activity (smart scheduling heatmap) ─────────────────────────────
+    activity: AsyncIOMotorCollection = db[COL_ACTIVITY]
+    await activity.create_indexes([
+        IndexModel([("chat_id", ASCENDING)]),
+        IndexModel([("chat_id", ASCENDING), ("hour", ASCENDING)], unique=True),
     ])
 
     logger.info("MongoDB indexes verified/created.")
@@ -652,6 +660,29 @@ async def get_bot_stats() -> dict[str, int]:
         "queues": queues,
         "pools": pools,
     }
+
+
+async def record_chat_activity(chat_id: int, hour: int) -> None:
+    """Increment the message count for a chat/hour bucket (0–23 UTC)."""
+    db = await get_db()
+    await db[COL_ACTIVITY].update_one(
+        {"chat_id": chat_id, "hour": hour},
+        {"$inc": {"count": 1}},
+        upsert=True,
+    )
+
+
+async def get_best_hours(chat_id: int, top_n: int = 3) -> list[dict]:
+    """
+    Return the top-N busiest hours for a chat, sorted by message count desc.
+    Each item: {"hour": int, "count": int}.  Empty list if no data yet.
+    """
+    db = await get_db()
+    cursor = db[COL_ACTIVITY].find(
+        {"chat_id": chat_id},
+        {"hour": 1, "count": 1},
+    ).sort("count", -1).limit(top_n)
+    return [{"hour": doc["hour"], "count": doc["count"]} async for doc in cursor]
 
 
 async def clear_all_bot_data() -> dict[str, int]:

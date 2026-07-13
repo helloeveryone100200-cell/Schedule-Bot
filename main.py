@@ -27,7 +27,7 @@ from telegram.ext import (
 )
 
 from config import MONGO_URI, PORT, TELEGRAM_BOT_TOKEN
-from database import close_db, connect_db, upsert_group, upsert_user
+from database import close_db, connect_db, record_chat_activity, upsert_group, upsert_user
 from handlers import chat_cleanup
 from handlers.base import build_base_conversation
 from handlers.owner_panel import build_owner_panel
@@ -131,6 +131,11 @@ async def _track_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await upsert_group(chat.id, chat.title, chat.type)
         except Exception:
             logger.exception("upsert_group tracking failed for chat_id=%s", chat.id)
+        if msg is not None and msg.date is not None:
+            try:
+                await record_chat_activity(chat.id, msg.date.hour)
+            except Exception:
+                logger.exception("record_chat_activity failed for chat_id=%s", chat.id)
 
 
 # Holds a reference to the running Application's bot_data dict. Populated once
