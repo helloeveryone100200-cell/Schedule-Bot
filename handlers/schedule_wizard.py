@@ -39,7 +39,7 @@ from telegram.ext import (
     filters,
 )
 
-from database import build_scheduled_post, insert_post, list_groups, get_best_hours
+from database import build_scheduled_post, insert_post, list_groups, list_groups_for_user, get_best_hours
 from handlers import chat_cleanup
 from handlers.base import CB_CANCEL, CB_MAIN_MENU, cmd_cancel, nav_keyboard, confirm_keyboard
 
@@ -426,8 +426,9 @@ async def enter_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     chat_cleanup.reset(context.application.bot_data, query.message.chat_id)
     chat_cleanup.track(context.application.bot_data, query.message.chat_id, query.message.message_id)
 
+    user_id      = query.from_user.id  # type: ignore[union-attr]
     bot_username = (await query.get_bot().get_me()).username
-    groups = await list_groups()
+    groups = await list_groups_for_user(user_id)
 
     if groups:
         await query.answer()
@@ -443,8 +444,9 @@ async def enter_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         await query.edit_message_text(
             "📅 *Schedule New Post — Step 1/9*\n\n"
             "⚠️ *No groups or channels found.*\n\n"
-            "The bot hasn't been added to any group or channel yet.\n"
-            "Add the bot first, then come back to schedule a post.\n\n"
+            "The bot hasn't been added to any group or channel yet, "
+            "or you haven't added the bot yourself.\n\n"
+            "Add the bot to your group first, then come back to schedule a post.\n\n"
             "_Or enter the Chat ID manually if you already have it._",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=_no_groups_keyboard(bot_username),
@@ -467,7 +469,8 @@ async def cb_chat_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
         return WIZARD_CHAT_ID
 
     # Look up the title from DB record so we can show it in the summary
-    groups = await list_groups()
+    user_id = query.from_user.id  # type: ignore[union-attr]
+    groups = await list_groups_for_user(user_id)
     title_map = {g["chat_id"]: (g.get("title") or str(g["chat_id"])) for g in groups}
     title = title_map.get(chat_id, str(chat_id))
 
@@ -494,8 +497,9 @@ async def cb_chat_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     query = update.callback_query
     raw = (query.data or "").replace(CB_CHAT_PAGE_PREFIX, "", 1)
     page = int(raw) if raw.isdigit() else 0
+    user_id      = query.from_user.id  # type: ignore[union-attr]
     bot_username = (await query.get_bot().get_me()).username
-    groups = await list_groups()
+    groups = await list_groups_for_user(user_id)
     total  = len(groups)
     start  = page * _CHAT_PAGE_SIZE
     shown  = min(_CHAT_PAGE_SIZE, total - start)

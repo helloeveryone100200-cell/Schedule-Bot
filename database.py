@@ -168,6 +168,7 @@ async def _ensure_indexes(db: AsyncIOMotorDatabase) -> None:
     groups: AsyncIOMotorCollection = db[COL_GROUPS]
     await groups.create_indexes([
         IndexModel([("chat_id", ASCENDING)], unique=True),
+        IndexModel([("added_by_user_ids", ASCENDING)]),
     ])
 
     # ── chat_activity (smart scheduling heatmap) ─────────────────────────────
@@ -587,20 +588,33 @@ async def upsert_user(user_id: int, username: str | None, first_name: str | None
     )
 
 
-async def upsert_group(chat_id: int, title: str | None, chat_type: str) -> None:
-    """Record/refresh a known group/channel (called opportunistically on any update)."""
+async def upsert_group(
+    chat_id: int,
+    title: str | None,
+    chat_type: str,
+    added_by_user_id: int | None = None,
+) -> None:
+    """
+    Record/refresh a known group/channel.
+    If added_by_user_id is supplied (i.e. the bot was just invited),
+    that user's ID is added to the `added_by_user_ids` set so they
+    can see this group in the schedule wizard.
+    """
     db = await get_db()
     now = datetime.now(tz=timezone.utc)
+    update: dict = {
+        "$set": {
+            "title": title,
+            "chat_type": chat_type,
+            "last_seen_at": now,
+        },
+        "$setOnInsert": {"first_seen_at": now},
+    }
+    if added_by_user_id is not None:
+        update["$addToSet"] = {"added_by_user_ids": added_by_user_id}
     await db[COL_GROUPS].update_one(
         {"chat_id": chat_id},
-        {
-            "$set": {
-                "title": title,
-                "chat_type": chat_type,
-                "last_seen_at": now,
-            },
-            "$setOnInsert": {"first_seen_at": now},
-        },
+        update,
         upsert=True,
     )
 
@@ -658,6 +672,19 @@ async def list_groups() -> list[dict]:
     """Full records (id + title + chat_type) for the owner panel's Group List."""
     db = await get_db()
     cursor = db[COL_GROUPS].find({}, {"chat_id": 1, "title": 1, "chat_type": 1})
+    return [doc async for doc in cursor]
+
+
+async def list_groups_for_user(user_id: int) -> list[dict]:
+    """
+    Return only the groups/channels where this specific user added the bot.
+    Filters on the `added_by_user_ids` array field.
+    """
+    db = await get_db()
+    cursor = db[COL_GROUPS].find(
+        {"added_by_user_ids": user_id},
+        {"chat_id": 1, "title": 1, "chat_type": 1},
+    )
     return [doc async for doc in cursor]
 
 

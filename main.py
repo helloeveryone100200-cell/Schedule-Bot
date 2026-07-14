@@ -139,32 +139,46 @@ async def _track_incoming(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                 logger.exception("record_chat_activity failed for chat_id=%s", chat.id)
 
 
-async def _on_bot_removed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+async def _on_bot_membership_change(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """
-    Fired when the bot's membership status changes in any chat.
-    When the bot is kicked or leaves a group/channel, cascade-delete
-    every MongoDB document that belongs to that chat.
+    Fired whenever the bot's membership status changes in any chat.
+
+    • Bot added (member / administrator) — record the inviting user's ID in
+      `added_by_user_ids` so they can see this group in the schedule wizard.
+    • Bot removed (kicked / left) — cascade-delete all group data from MongoDB.
     """
     event = update.my_chat_member
     if event is None:
         return
-    new_status = event.new_chat_member.status  # "kicked", "left", "member", "administrator", …
-    if new_status not in ("kicked", "left"):
-        return
 
+    new_status = event.new_chat_member.status  # "kicked","left","member","administrator",…
     chat_id    = event.chat.id
     chat_title = event.chat.title or str(chat_id)
-    logger.info("Bot removed from '%s' (%s) — purging all group data…", chat_title, chat_id)
+    chat_type  = event.chat.type  # "group","supergroup","channel",…
 
-    try:
-        counts = await remove_group(chat_id)
+    if new_status in ("member", "administrator"):
+        # Bot was just added — record who invited it
+        added_by = event.from_user.id if event.from_user else None
         logger.info(
-            "Purged data for chat %s: %s",
-            chat_id,
-            ", ".join(f"{k}={v}" for k, v in counts.items()),
+            "Bot added to '%s' (%s) by user %s — recording membership.",
+            chat_title, chat_id, added_by,
         )
-    except Exception:
-        logger.exception("Failed to purge data for chat %s after bot removal.", chat_id)
+        try:
+            await upsert_group(chat_id, chat_title, chat_type, added_by_user_id=added_by)
+        except Exception:
+            logger.exception("upsert_group (add event) failed for chat %s.", chat_id)
+
+    elif new_status in ("kicked", "left"):
+        logger.info("Bot removed from '%s' (%s) — purging all group data…", chat_title, chat_id)
+        try:
+            counts = await remove_group(chat_id)
+            logger.info(
+                "Purged data for chat %s: %s",
+                chat_id,
+                ", ".join(f"{k}={v}" for k, v in counts.items()),
+            )
+        except Exception:
+            logger.exception("Failed to purge data for chat %s after bot removal.", chat_id)
 
 
 # Holds a reference to the running Application's bot_data dict. Populated once
@@ -239,7 +253,7 @@ def main() -> None:
     app.add_handler(CallbackQueryHandler(_track_incoming), group=-1)
 
     # Cascade-delete all group data when the bot is kicked or leaves
-    app.add_handler(ChatMemberHandler(_on_bot_removed, ChatMemberHandler.MY_CHAT_MEMBER))
+    app.add_handler(ChatMemberHandler(_on_bot_membership_change, ChatMemberHandler.MY_CHAT_MEMBER))
 
     # Register ConversationHandlers — specific wizards first (higher priority)
     app.add_handler(build_schedule_wizard())
