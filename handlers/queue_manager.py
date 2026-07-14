@@ -71,8 +71,9 @@ logger = logging.getLogger(__name__)
     MP_SET_INTERVAL_UNIT,
     MP_SET_FIRST_RUN,
     MP_SET_TIMEZONE,
+    MP_AUTO_DELETE,
     MP_CONFIRM,
-) = range(200, 208)
+) = range(200, 209)
 
 # ---------------------------------------------------------------------------
 # Callback-data constants  (all ≤ 64 bytes)
@@ -103,10 +104,14 @@ CB_MP_IU_DAYS      = "mp:iu:days"
 
 # Back targets
 CB_BACK_QM_MENU    = "back:qm_menu"
+CB_MP_AD_YES       = "mp:ad:yes"
+CB_MP_AD_NO        = "mp:ad:no"
+
 CB_BACK_MP_MENU    = "back:mp_menu"
 CB_BACK_MP_IV      = "back:mp_iv"
 CB_BACK_MP_IU      = "back:mp_iu"
 CB_BACK_MP_FR      = "back:mp_fr"
+CB_BACK_MP_TZ      = "back:mp_tz"
 
 # Timezone constants (reuse same set as wizard)
 CB_MP_TZ_PAGE = "mptz:page:"
@@ -850,29 +855,118 @@ async def cb_mp_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     pm["timezone"] = tz_key
     await query.answer()
 
+    await query.edit_message_text(
+        "🗑 *Auto-Delete After Posting?*\n\n"
+        "Should the bot automatically delete each pool post after a set time?\n\n"
+        "Tap *Yes* to set a duration, or *No* to keep posts permanently.",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Yes", callback_data=CB_MP_AD_YES),
+                InlineKeyboardButton("❌ No",  callback_data=CB_MP_AD_NO),
+            ],
+            [InlineKeyboardButton("⬅️ Back", callback_data=CB_BACK_MP_TZ)],
+        ]),
+    )
+    return MP_AUTO_DELETE
+
+
+def _mp_summary_text(pm: dict) -> str:
+    """Build the schedule summary message text from pool-wizard context."""
     chat_id   = pm.get("mp_chat_id", "?")
     value     = pm.get("interval_value", "?")
     unit      = pm.get("interval_unit", "?")
     first_run = pm.get("first_run", "?")
+    tz_key    = pm.get("timezone", "UTC")
     tz_label  = next((lbl for k, lbl in TIMEZONES if k == tz_key), tz_key)
     first_run_display = "Now (immediately)" if first_run == "now" else first_run
-
-    await query.edit_message_text(
+    ad_hours  = pm.get("mp_ad_hours")
+    ad_line   = f"`{ad_hours}h` after posting" if ad_hours else "OFF"
+    return (
         f"📋 *Schedule Summary*\n\n"
         f"🗂 Chat: `{chat_id}`\n"
         f"⏱ Interval: every `{value} {unit}`\n"
         f"🕐 First post: `{first_run_display}`\n"
-        f"🌍 Timezone: `{tz_label}`\n\n"
-        "Tap *✅ Confirm* to activate:",
+        f"🌍 Timezone: `{tz_label}`\n"
+        f"🗑 Auto-delete: {ad_line}\n\n"
+        "Tap *✅ Confirm* to activate:"
+    )
+
+
+async def cb_mp_ad_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """User chose Yes to auto-delete — ask for duration in hours."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        "⏳ *Auto-Delete Duration*\n\n"
+        "How many hours after posting should the message be deleted?\n"
+        "Enter a number (decimals OK, e.g. `24` or `1.5`):",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=nav_keyboard(back_data=CB_BACK_MP_TZ),
+    )
+    return MP_AUTO_DELETE
+
+
+async def recv_mp_ad_hours(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receive the auto-delete hours value."""
+    text = (update.message.text or "").strip().replace(",", ".")
+    try:
+        val = float(text)
+        if val <= 0:
+            raise ValueError
+    except ValueError:
+        await update.message.reply_text(
+            "⚠️ Enter a positive number (e.g. `24` for 24 hours, `1.5` for 90 minutes).",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return MP_AUTO_DELETE
+    pm = _pm(context)
+    pm["mp_ad_hours"] = val
+    await update.message.reply_text(
+        _mp_summary_text(pm),
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=InlineKeyboardMarkup([
             [
                 InlineKeyboardButton("✅ Confirm", callback_data=CB_MP_CONFIRM),
-                InlineKeyboardButton("⬅️ Back",   callback_data=CB_BACK_MP_FR),
+                InlineKeyboardButton("⬅️ Back",   callback_data=CB_BACK_MP_TZ),
             ],
         ]),
     )
     return MP_CONFIRM
+
+
+async def cb_mp_ad_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """User chose No auto-delete — go to confirm summary."""
+    query = update.callback_query
+    pm = _pm(context)
+    pm.pop("mp_ad_hours", None)
+    await query.answer()
+    await query.edit_message_text(
+        _mp_summary_text(pm),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Confirm", callback_data=CB_MP_CONFIRM),
+                InlineKeyboardButton("⬅️ Back",   callback_data=CB_BACK_MP_TZ),
+            ],
+        ]),
+    )
+    return MP_CONFIRM
+
+
+async def cb_back_mp_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back from auto-delete or confirm → re-show timezone picker."""
+    query = update.callback_query
+    pm = _pm(context)
+    pm.pop("mp_ad_hours", None)
+    page = pm.get("tz_page", 0)
+    await query.answer()
+    await query.edit_message_text(
+        "🌍 *Select your timezone:*",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_mp_tz_keyboard(page),
+    )
+    return MP_SET_TIMEZONE
 
 
 async def cb_mp_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -908,6 +1002,8 @@ async def cb_mp_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             candidate += timedelta(days=1)
         first_run_dt = candidate.astimezone(timezone.utc)
 
+    ad_hours = pm.get("mp_ad_hours")
+
     try:
         doc = build_scheduled_post(
             user_id=user_id,
@@ -917,6 +1013,8 @@ async def cb_mp_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             interval_unit=unit,
             next_run_at=first_run_dt,
             timezone_str=tz_str,
+            auto_delete_enabled=bool(ad_hours),
+            auto_delete_after_hours=ad_hours,
         )
         post_id = await insert_post(doc)
     except Exception as exc:
@@ -1229,15 +1327,22 @@ def build_media_pool() -> ConversationHandler:
                 CallbackQueryHandler(cb_back_mp_menu,      pattern=f"^{CB_BACK_MP_MENU}$"),
             ],
             MP_SET_TIMEZONE: [
-                CallbackQueryHandler(cb_mp_tz,      pattern=mp_tz_pattern),
-                CallbackQueryHandler(cb_mp_tz_page, pattern=mp_tzp_pattern),
+                CallbackQueryHandler(cb_mp_tz,             pattern=mp_tz_pattern),
+                CallbackQueryHandler(cb_mp_tz_page,        pattern=mp_tzp_pattern),
                 CallbackQueryHandler(cb_back_mp_first_run, pattern=f"^{CB_BACK_MP_FR}$"),
                 CallbackQueryHandler(cb_back_mp_menu,      pattern=f"^{CB_BACK_MP_MENU}$"),
             ],
+            MP_AUTO_DELETE: [
+                CallbackQueryHandler(cb_mp_ad_yes,    pattern=f"^{CB_MP_AD_YES}$"),
+                CallbackQueryHandler(cb_mp_ad_no,     pattern=f"^{CB_MP_AD_NO}$"),
+                CallbackQueryHandler(cb_back_mp_tz,   pattern=f"^{CB_BACK_MP_TZ}$"),
+                CallbackQueryHandler(cb_back_mp_menu, pattern=f"^{CB_BACK_MP_MENU}$"),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recv_mp_ad_hours),
+            ],
             MP_CONFIRM: [
-                CallbackQueryHandler(cb_mp_confirm,        pattern=f"^{CB_MP_CONFIRM}$"),
-                CallbackQueryHandler(cb_back_mp_first_run, pattern=f"^{CB_BACK_MP_FR}$"),
-                CallbackQueryHandler(cb_back_mp_menu,      pattern=f"^{CB_BACK_MP_MENU}$"),
+                CallbackQueryHandler(cb_mp_confirm,   pattern=f"^{CB_MP_CONFIRM}$"),
+                CallbackQueryHandler(cb_back_mp_tz,   pattern=f"^{CB_BACK_MP_TZ}$"),
+                CallbackQueryHandler(cb_back_mp_menu, pattern=f"^{CB_BACK_MP_MENU}$"),
             ],
         },
         fallbacks=[
