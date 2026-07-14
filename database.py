@@ -257,49 +257,56 @@ def build_scheduled_post(
 
     now = datetime.now(tz=timezone.utc)
 
-    return {
-        "user_id": user_id,
-        "chat_id": chat_id,
-        "content": {
-            "text": content_text,
-            "media_file_id": content_media_file_id,
-            "media_type": content_media_type,
-            "inline_keyboard": inline_keyboard or [],
-        },
-        "timezone": timezone_str,
-        "status": "pending",
-        "max_runs": max_runs,
-        "run_count": 0,
-        "recurrence": {
-            "type": recurrence_type,
-            "interval_value": interval_value,
-            "interval_unit": interval_unit,
-            "days_of_week": days_of_week or [],
-            "next_run_at": next_run_at,
-            "cron_expression": cron_expression,
-        },
-        "time_window": {
-            "enabled": time_window_enabled,
-            "start_time": time_window_start,
-            "end_time": time_window_end,
-        },
-        "lifecycle_settings": {
-            "auto_delete": {
-                "enabled": auto_delete_enabled,
-                "after_hours": auto_delete_after_hours,
-            },
-            "self_destruct": {
-                "enabled": self_destruct_enabled,
-                "after_seconds": self_destruct_after_seconds,
-            },
-            "auto_pin": {
-                "enabled": auto_pin_enabled,
-                "unpin_after_hours": auto_pin_unpin_after_hours,
-            },
-        },
+    # ── content — omit null / empty fields ──────────────────────────────────
+    content: dict[str, Any] = {}
+    if content_text:
+        content["text"] = content_text
+    if content_media_file_id:
+        content["media_file_id"] = content_media_file_id
+    if content_media_type:
+        content["media_type"] = content_media_type
+    if inline_keyboard:
+        content["inline_keyboard"] = inline_keyboard
+
+    # ── recurrence — only store fields relevant to this type ────────────────
+    recurrence: dict[str, Any] = {"type": recurrence_type, "next_run_at": next_run_at}
+    if recurrence_type == "interval":
+        recurrence["interval_value"] = interval_value
+        recurrence["interval_unit"]  = interval_unit
+    elif recurrence_type == "days_of_week":
+        recurrence["days_of_week"] = days_of_week or []
+    elif recurrence_type == "cron":
+        recurrence["cron_expression"] = cron_expression
+
+    # ── document ─────────────────────────────────────────────────────────────
+    doc: dict[str, Any] = {
+        "user_id":    user_id,
+        "chat_id":    chat_id,
+        "content":    content,
+        "timezone":   timezone_str,
+        "status":     "pending",
+        "run_count":  0,
+        "recurrence": recurrence,
         "created_at": now,
         "updated_at": now,
     }
+
+    if max_runs is not None:
+        doc["max_runs"] = max_runs
+
+    # time_window — only present when enabled (presence = enabled, no flag needed)
+    if time_window_enabled:
+        doc["time_window"] = {"start": time_window_start, "end": time_window_end}
+
+    # lifecycle — flat optional fields; presence means enabled, no nested dicts
+    if auto_delete_enabled and auto_delete_after_hours:
+        doc["ad_hours"] = auto_delete_after_hours
+    if self_destruct_enabled and self_destruct_after_seconds:
+        doc["sd_secs"] = self_destruct_after_seconds
+    if auto_pin_enabled:
+        doc["ap_hours"] = auto_pin_unpin_after_hours  # None = pin forever
+
+    return doc
 
 
 def build_queue_slot_doc(

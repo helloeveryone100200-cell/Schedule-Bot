@@ -53,12 +53,12 @@ def _is_within_window(post: dict[str, Any], now_utc: datetime) -> bool:
     Return True if `now_utc` falls within the post's time window (or window is disabled).
     Window times are stored as "HH:MM" strings and interpreted in the post's timezone.
     """
-    tw = post.get("time_window", {})
-    if not tw.get("enabled"):
+    tw = post.get("time_window")
+    if not tw:
         return True
 
-    start_str: str | None = tw.get("start_time")
-    end_str:   str | None = tw.get("end_time")
+    start_str: str | None = tw.get("start")
+    end_str:   str | None = tw.get("end")
     if not start_str or not end_str:
         return True
 
@@ -210,42 +210,36 @@ async def _handle_lifecycle(bot: Bot, post: dict[str, Any], sent_msg: Message) -
     """Pin, schedule auto-delete, and schedule self-destruct for a sent message."""
     chat_id     = sent_msg.chat_id
     message_id  = sent_msg.message_id
-    lifecycle   = post.get("lifecycle_settings", {})
-
-    # Auto-pin
-    ap = lifecycle.get("auto_pin", {})
-    if ap.get("enabled"):
+    # Auto-pin  (ap_hours present = enabled; None value = pin forever)
+    if "ap_hours" in post:
         try:
             await bot.pin_chat_message(chat_id, message_id, disable_notification=True)
             logger.info("Pinned message %s in chat %s", message_id, chat_id)
         except (Forbidden, BadRequest) as exc:
             logger.warning("Could not pin message %s: %s", message_id, exc)
 
-        unpin_hrs: float | None = ap.get("unpin_after_hours")
+        unpin_hrs: float | None = post["ap_hours"]
         if unpin_hrs and unpin_hrs > 0:
-            # Schedule unpin — stored in DB so it survives restarts
             fire_at = datetime.now(tz=timezone.utc) + timedelta(hours=unpin_hrs)
             await _store_lifecycle_task(
                 chat_id=chat_id, message_id=message_id,
                 action="unpin", fire_at=fire_at,
             )
 
-    # Auto-delete
-    ad = lifecycle.get("auto_delete", {})
-    if ad.get("enabled"):
-        delete_hrs: float | None = ad.get("after_hours")
-        if delete_hrs and delete_hrs > 0:
+    # Auto-delete  (ad_hours present = enabled)
+    if "ad_hours" in post:
+        delete_hrs: float = post["ad_hours"]
+        if delete_hrs > 0:
             fire_at = datetime.now(tz=timezone.utc) + timedelta(hours=delete_hrs)
             await _store_lifecycle_task(
                 chat_id=chat_id, message_id=message_id,
                 action="delete", fire_at=fire_at,
             )
 
-    # Self-destruct (takes priority over auto_delete — fires sooner)
-    sd = lifecycle.get("self_destruct", {})
-    if sd.get("enabled"):
-        sd_secs: int | None = sd.get("after_seconds")
-        if sd_secs and sd_secs > 0:
+    # Self-destruct  (sd_secs present = enabled; takes priority over auto_delete)
+    if "sd_secs" in post:
+        sd_secs: int = post["sd_secs"]
+        if sd_secs > 0:
             fire_at = datetime.now(tz=timezone.utc) + timedelta(seconds=sd_secs)
             await _store_lifecycle_task(
                 chat_id=chat_id, message_id=message_id,

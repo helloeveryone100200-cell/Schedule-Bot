@@ -464,14 +464,17 @@ async def cb_qm_confirm_add(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user_id: int = query.from_user.id  # type: ignore[union-attr]
     chat_id: int = w["add_chat_id"]
 
-    content_item = {
-        "text":          w.get("content_text"),
-        "media_file_id": w.get("media_file_id"),
-        "media_type":    w.get("media_type"),
+    content_item: dict = {
         "slot":          w.get("assigned_slot"),
         "scheduled_for": w.get("assigned_slot_dt"),
         "posted":        False,
     }
+    if w.get("content_text"):
+        content_item["text"] = w["content_text"]
+    if w.get("media_file_id"):
+        content_item["media_file_id"] = w["media_file_id"]
+    if w.get("media_type"):
+        content_item["media_type"] = w["media_type"]
 
     try:
         await add_to_queue(user_id, chat_id, content_item)
