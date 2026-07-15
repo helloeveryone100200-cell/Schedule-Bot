@@ -61,7 +61,9 @@ logger = logging.getLogger(__name__)
     QM_ADD_CONTENT,
     QM_ADD_CHAT_ID,
     QM_CONFIRM_SLOT,
-) = range(100, 106)
+    QM_SET_SLOTS_CHAT_ID,
+    QM_SET_SLOTS_TZ,
+) = range(100, 108)
 
 (
     MP_MENU,
@@ -103,7 +105,12 @@ CB_MP_IU_HOURS     = "mp:iu:hours"
 CB_MP_IU_DAYS      = "mp:iu:days"
 
 # Back targets
-CB_BACK_QM_MENU    = "back:qm_menu"
+CB_BACK_QM_MENU       = "back:qm_menu"
+CB_BACK_QM_SLOT_CHAT  = "back:qm_slot_chat"
+CB_BACK_QM_SLOT_TZ    = "back:qm_slot_tz"
+
+# QM timezone picker
+CB_QM_TZ_PAGE = "qmtz:page:"
 CB_MP_AD_YES       = "mp:ad:yes"
 CB_MP_AD_NO        = "mp:ad:no"
 
@@ -239,6 +246,28 @@ def _mp_interval_unit_keyboard() -> InlineKeyboardMarkup:
     ])
 
 
+def _qm_tz_keyboard(page: int = 0) -> InlineKeyboardMarkup:
+    """Timezone picker keyboard for the Queue Manager Set Slots wizard."""
+    start = page * TZ_PAGE_SIZE
+    end   = start + TZ_PAGE_SIZE
+    rows = [
+        [InlineKeyboardButton(label, callback_data=f"qmtz:{tz}")]
+        for tz, label in TIMEZONES[start:end]
+    ]
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ Prev", callback_data=f"{CB_QM_TZ_PAGE}{page - 1}"))
+    if end < len(TIMEZONES):
+        nav.append(InlineKeyboardButton("▶️ Next", callback_data=f"{CB_QM_TZ_PAGE}{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([
+        InlineKeyboardButton("⬅️ Back",   callback_data=CB_BACK_QM_SLOT_TZ),
+        InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
 def _mp_tz_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     start = page * TZ_PAGE_SIZE
     end   = start + TZ_PAGE_SIZE
@@ -298,73 +327,148 @@ async def enter_queue_manager(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 async def cb_qm_set_slots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
+    _w(context).pop("slots_chat_id", None)
+    _w(context).pop("pending_slots", None)
     await _edit(query,
-        "⏰ *Set Daily Slots*\n\n"
-        "Type the times you want to post each day, separated by commas or spaces.\n\n"
-        "Example: `09:00, 14:00, 20:00`\n\n"
-        "Send your chat/channel ID first, then the slots:\n"
-        "Format: `CHAT_ID: 09:00, 14:00, 20:00`\n"
-        "Example: `-1001234567890: 09:00, 14:30, 21:00`",
+        "⏰ *Set Daily Slots — Step 1 of 3*\n\n"
+        "Type the *Chat ID* of the channel/group to set slots for:\n"
+        "_(Use /id in the group to get the ID)_",
         nav_keyboard(back_data=CB_BACK_QM_MENU),
+    )
+    return QM_SET_SLOTS_CHAT_ID
+
+
+async def recv_qm_slots_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Step 1 — receive chat ID for the slots wizard."""
+    text = (update.message.text or "").strip()
+    try:
+        chat_id = int(text)
+    except ValueError:
+        await update.message.reply_text(
+            "⚠️ Enter a valid numeric Chat ID (e.g. `-1001234567890`).",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return QM_SET_SLOTS_CHAT_ID
+
+    _w(context)["slots_chat_id"] = chat_id
+    await update.message.reply_text(
+        f"✅ Chat: `{chat_id}`\n\n"
+        "⏰ *Set Daily Slots — Step 2 of 3*\n\n"
+        "Enter the daily posting times separated by commas or spaces.\n\n"
+        "Example: `09:00, 14:00, 20:00`",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=nav_keyboard(back_data=CB_BACK_QM_SLOT_CHAT),
     )
     return QM_SET_SLOTS
 
 
 async def recv_qm_slots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Step 2 — receive HH:MM time list, then show timezone picker."""
     text = (update.message.text or "").strip()
-
-    # Parse "CHAT_ID: HH:MM, HH:MM, ..."
-    if ":" not in text:
-        await update.message.reply_text(
-            "⚠️ Format: `CHAT_ID: HH:MM, HH:MM, ...`\n"
-            "Example: `-1001234567890: 09:00, 14:00, 20:00`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return QM_SET_SLOTS
-
-    chat_part, _, slots_part = text.partition(":")
-    # Handle negative chat IDs like -1001234567890
-    # The partition on first ':' may split a negative ID — rejoin if needed
-    # Detect if slots_part itself starts with digits (means chat_id was cut)
-    chat_part = chat_part.strip()
-    # Remove the extra colon from time strings that get split
-    slots_raw = slots_part.strip()
-
-    try:
-        chat_id = int(chat_part)
-    except ValueError:
-        await update.message.reply_text(
-            "⚠️ Invalid Chat ID. Make sure format is:\n`CHAT_ID: 09:00, 14:00`",
-            parse_mode=ParseMode.MARKDOWN,
-        )
-        return QM_SET_SLOTS
-
-    slots = _parse_slots(slots_raw)
+    slots = _parse_slots(text)
     if not slots:
         await update.message.reply_text(
-            "⚠️ Could not parse any valid time slots.\n"
-            "Use `HH:MM` format, e.g. `09:00, 14:30, 21:00`",
+            "⚠️ Could not parse valid times. Use `HH:MM` format.\n"
+            "Example: `09:00, 14:30, 21:00`",
             parse_mode=ParseMode.MARKDOWN,
         )
         return QM_SET_SLOTS
 
-    user_id: int = update.message.from_user.id  # type: ignore[union-attr]
+    _w(context)["pending_slots"] = slots
+    _w(context).setdefault("qm_tz_page", 0)
+    slot_display = "  •  ".join(slots)
+    await update.message.reply_text(
+        f"✅ Slots: `{slot_display}`\n\n"
+        "🌍 *Set Daily Slots — Step 3 of 3*\n\n"
+        "Select your timezone:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_qm_tz_keyboard(0),
+    )
+    return QM_SET_SLOTS_TZ
+
+
+async def cb_qm_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Step 3 — user picked a timezone; save slots + timezone to DB."""
+    query = update.callback_query
+    tz_key = (query.data or "").replace("qmtz:", "", 1)
     try:
-        await upsert_queue_slots(user_id, chat_id, slots)
+        pytz.timezone(tz_key)
+    except pytz.exceptions.UnknownTimeZoneError:
+        await query.answer("Unknown timezone — choose from the list.", show_alert=True)
+        return QM_SET_SLOTS_TZ
+
+    w = _w(context)
+    user_id: int = query.from_user.id  # type: ignore[union-attr]
+    chat_id: int = w["slots_chat_id"]
+    slots: list[str] = w["pending_slots"]
+    tz_label = next((lbl for k, lbl in TIMEZONES if k == tz_key), tz_key)
+
+    await query.answer()
+    try:
+        await upsert_queue_slots(user_id, chat_id, slots, tz_key)
     except Exception as exc:
         logger.exception("upsert_queue_slots failed: %s", exc)
-        await update.message.reply_text(f"❌ Database error: `{exc}`", parse_mode=ParseMode.MARKDOWN)
+        await query.edit_message_text(f"❌ Database error: `{exc}`", parse_mode=ParseMode.MARKDOWN)
+        _clear(context)
         return QM_MENU
 
     slot_display = "  •  ".join(slots)
-    await update.message.reply_text(
-        f"✅ *Daily slots saved for chat `{chat_id}`*\n\n"
-        f"⏰ Slots: `{slot_display}`\n\n"
+    _clear(context)
+    await query.edit_message_text(
+        f"✅ *Daily slots saved!*\n\n"
+        f"🗂 Chat: `{chat_id}`\n"
+        f"⏰ Slots: `{slot_display}`\n"
+        f"🌍 Timezone: `{tz_label}`\n\n"
         "Now use *Add Content to Queue* to fill them!",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=_qm_menu_keyboard(),
     )
     return QM_MENU
+
+
+async def cb_qm_tz_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Pagination for the QM timezone picker."""
+    query = update.callback_query
+    page_str = (query.data or "").replace(CB_QM_TZ_PAGE, "")
+    page = int(page_str) if page_str.isdigit() else 0
+    _w(context)["qm_tz_page"] = page
+    await query.answer()
+    await query.edit_message_text(
+        "🌍 *Select your timezone:*",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_qm_tz_keyboard(page),
+    )
+    return QM_SET_SLOTS_TZ
+
+
+async def cb_back_qm_slot_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back from slots input (Step 2) → re-ask for Chat ID (Step 1)."""
+    query = update.callback_query
+    _w(context).pop("slots_chat_id", None)
+    await _edit(query,
+        "⏰ *Set Daily Slots — Step 1 of 3*\n\n"
+        "Type the *Chat ID* of the channel/group to set slots for:\n"
+        "_(Use /id in the group to get the ID)_",
+        nav_keyboard(back_data=CB_BACK_QM_MENU),
+    )
+    return QM_SET_SLOTS_CHAT_ID
+
+
+async def cb_back_qm_slot_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back from timezone picker (Step 3) → re-ask for slots (Step 2)."""
+    query = update.callback_query
+    chat_id = _w(context).get("slots_chat_id", "?")
+    _w(context).pop("pending_slots", None)
+    await query.answer()
+    await query.edit_message_text(
+        f"✅ Chat: `{chat_id}`\n\n"
+        "⏰ *Set Daily Slots — Step 2 of 3*\n\n"
+        "Enter the daily posting times separated by commas or spaces.\n\n"
+        "Example: `09:00, 14:00, 20:00`",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=nav_keyboard(back_data=CB_BACK_QM_SLOT_CHAT),
+    )
+    return QM_SET_SLOTS
 
 
 # ── Add Content to Queue ──
@@ -437,7 +541,8 @@ async def recv_qm_content(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         )
         return QM_MENU
 
-    result = _next_slot_datetime(slots)
+    tz_str = queue_doc.get("timezone", "UTC") if queue_doc else "UTC"
+    result = _next_slot_datetime(slots, tz_str)
     if result is None:
         await msg.reply_text("⚠️ No upcoming slot found.", parse_mode=ParseMode.MARKDOWN)
         return QM_MENU
@@ -541,12 +646,15 @@ async def cb_qm_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     lines = ["📋 *Your Queues*\n"]
     for doc in docs:
-        slots   = doc.get("slots", [])
+        slots    = doc.get("slots", [])
+        tz_str   = doc.get("timezone", "UTC")
+        tz_label = next((lbl for k, lbl in TIMEZONES if k == tz_str), tz_str)
         contents = doc.get("contents", [])
         pending  = sum(1 for c in contents if not c.get("posted", False))
         lines.append(
             f"🗂 Chat `{doc['chat_id']}`\n"
             f"  ⏰ Slots: `{'  •  '.join(slots) or 'none'}`\n"
+            f"  🌍 Timezone: `{tz_label}`\n"
             f"  📝 Items in queue: `{len(contents)}` ({pending} pending)\n"
         )
 
@@ -1237,6 +1345,9 @@ async def cb_cancel_local(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ============================================================================
 
 def build_queue_manager() -> ConversationHandler:
+    qm_tz_pattern  = r"^qmtz:(?!page:).+"
+    qm_tzp_pattern = r"^qmtz:page:\d+$"
+
     return ConversationHandler(
         entry_points=[CallbackQueryHandler(enter_queue_manager, pattern=f"^{CB_MANAGE_QUEUE}$")],
         states={
@@ -1249,10 +1360,23 @@ def build_queue_manager() -> ConversationHandler:
                 CallbackQueryHandler(cb_qm_confirm_add, pattern=f"^{CB_QM_CONFIRM_ADD}$"),
                 CallbackQueryHandler(cb_back_qm_menu,   pattern=f"^{CB_BACK_QM_MENU}$"),
             ],
+            # ── Set Slots wizard ──────────────────────────────────────────────
+            QM_SET_SLOTS_CHAT_ID: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recv_qm_slots_chat_id),
+                CallbackQueryHandler(cb_back_qm_menu,      pattern=f"^{CB_BACK_QM_MENU}$"),
+            ],
             QM_SET_SLOTS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_qm_slots),
-                CallbackQueryHandler(cb_back_qm_menu, pattern=f"^{CB_BACK_QM_MENU}$"),
+                CallbackQueryHandler(cb_back_qm_slot_chat, pattern=f"^{CB_BACK_QM_SLOT_CHAT}$"),
+                CallbackQueryHandler(cb_back_qm_menu,      pattern=f"^{CB_BACK_QM_MENU}$"),
             ],
+            QM_SET_SLOTS_TZ: [
+                CallbackQueryHandler(cb_qm_tz,             pattern=qm_tz_pattern),
+                CallbackQueryHandler(cb_qm_tz_page,        pattern=qm_tzp_pattern),
+                CallbackQueryHandler(cb_back_qm_slot_tz,   pattern=f"^{CB_BACK_QM_SLOT_TZ}$"),
+                CallbackQueryHandler(cb_back_qm_menu,      pattern=f"^{CB_BACK_QM_MENU}$"),
+            ],
+            # ── Add Content wizard ────────────────────────────────────────────
             QM_ADD_CHAT_ID: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_qm_add_chat_id),
                 CallbackQueryHandler(cb_back_qm_menu, pattern=f"^{CB_BACK_QM_MENU}$"),

@@ -314,18 +314,21 @@ def build_queue_slot_doc(
     chat_id: int,
     slots: list[str] | None = None,
     contents: list[dict[str, Any]] | None = None,
+    timezone_str: str = "UTC",
 ) -> dict[str, Any]:
     """
     Build a queue-slot document.
 
-    - slots    : list of time strings, e.g. ["09:00", "14:00", "20:00"]
-    - contents : list of content dicts queued for those slots
+    - slots        : list of time strings, e.g. ["09:00", "14:00", "20:00"]
+    - contents     : list of content dicts queued for those slots
+    - timezone_str : IANA timezone key, e.g. "Asia/Rangoon"
     """
     now = datetime.now(tz=timezone.utc)
     return {
         "user_id": user_id,
         "chat_id": chat_id,
         "slots": slots or [],
+        "timezone": timezone_str,
         "contents": contents or [],
         "created_at": now,
         "updated_at": now,
@@ -450,14 +453,19 @@ async def delete_post(post_id: str) -> bool:
 # CRUD helpers — queue_slots
 # ---------------------------------------------------------------------------
 
-async def upsert_queue_slots(user_id: int, chat_id: int, slots: list[str]) -> None:
-    """Set (replace) the daily slot times for a chat."""
+async def upsert_queue_slots(
+    user_id: int,
+    chat_id: int,
+    slots: list[str],
+    timezone_str: str = "UTC",
+) -> None:
+    """Set (replace) the daily slot times and timezone for a chat."""
     db = await get_db()
     now = datetime.now(tz=timezone.utc)
     await db[COL_QUEUE_SLOTS].update_one(
         {"user_id": user_id, "chat_id": chat_id},
         {
-            "$set": {"slots": sorted(slots), "updated_at": now},
+            "$set": {"slots": sorted(slots), "timezone": timezone_str, "updated_at": now},
             "$setOnInsert": {"contents": [], "created_at": now},
         },
         upsert=True,
