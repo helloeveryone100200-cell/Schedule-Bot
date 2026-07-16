@@ -2,8 +2,10 @@
 handlers/queue_manager.py — Two fully independent sub-systems:
 
   A) QUEUE MANAGER (slot-based)
+     • Choose a group/channel from a picker (or enter ID manually)
      • Set named daily time slots for a chat
-     • Drop content in → auto-assigned to next free chronological slot
+     • Add content → specify exact date/time (DD/MM/YYYY HH:MM or HH:MM) + timezone
+     • Confirm / Cancel with full message cleanup
      • View / clear the queue
 
   B) MEDIA POOL (random shuffler)
@@ -43,6 +45,7 @@ from database import (
     build_queue_slot_doc,
     build_media_pool_doc,
     get_db,
+    list_groups_for_user,
     COL_QUEUE_SLOTS,
     COL_MEDIA_POOLS,
 )
@@ -64,6 +67,10 @@ logger = logging.getLogger(__name__)
     QM_SET_SLOTS_CHAT_ID,
     QM_SET_SLOTS_TZ,
 ) = range(100, 108)
+
+# New states for date/time + timezone in Add Content flow
+QM_ADD_DATE = 108
+QM_ADD_TZ   = 109
 
 (
     MP_MENU,
@@ -91,6 +98,19 @@ CB_QM_CLEAR        = "qm:clear"
 CB_QM_CLEAR_YES    = "qm:clear_yes"
 CB_QM_CONFIRM_ADD  = "qm:confirm_add"
 
+# Group picker — Set Slots flow
+CB_QM_SS_PICK   = "qm:ss:pick:"    # + str(chat_id)
+CB_QM_SS_PAGE   = "qm:ss:page:"    # + str(page)
+CB_QM_SS_MANUAL = "qm:ss:manual"
+
+# Group picker — Add Content flow
+CB_QM_AC_PICK   = "qm:ac:pick:"    # + str(chat_id)
+CB_QM_AC_PAGE   = "qm:ac:page:"    # + str(page)
+CB_QM_AC_MANUAL = "qm:ac:manual"
+
+# Add Content timezone picker
+CB_QM_AC_TZ_PAGE = "qmactz:page:"  # + str(page)
+
 # Media pool
 CB_MP_ADD_ITEM     = "mp:add"
 CB_MP_VIEW         = "mp:view"
@@ -105,11 +125,15 @@ CB_MP_IU_HOURS     = "mp:iu:hours"
 CB_MP_IU_DAYS      = "mp:iu:days"
 
 # Back targets
-CB_BACK_QM_MENU       = "back:qm_menu"
-CB_BACK_QM_SLOT_CHAT  = "back:qm_slot_chat"
-CB_BACK_QM_SLOT_TZ    = "back:qm_slot_tz"
+CB_BACK_QM_MENU         = "back:qm_menu"
+CB_BACK_QM_SLOT_CHAT    = "back:qm_slot_chat"    # back to Set Slots group picker
+CB_BACK_QM_SLOT_TZ      = "back:qm_slot_tz"      # back to slots text entry
+CB_BACK_QM_AC_CHAT      = "back:qm_ac_chat"      # back to Add Content group picker
+CB_BACK_QM_AC_CONTENT   = "back:qm_ac_content"   # back to Add Content content send
+CB_BACK_QM_AC_DATE      = "back:qm_ac_date"      # back to Add Content date step
+CB_BACK_QM_AC_TZ        = "back:qm_ac_tz"        # back to Add Content timezone step
 
-# QM timezone picker
+# QM timezone picker (Set Slots)
 CB_QM_TZ_PAGE = "qmtz:page:"
 CB_MP_AD_YES       = "mp:ad:yes"
 CB_MP_AD_NO        = "mp:ad:no"
@@ -120,9 +144,12 @@ CB_BACK_MP_IU      = "back:mp_iu"
 CB_BACK_MP_FR      = "back:mp_fr"
 CB_BACK_MP_TZ      = "back:mp_tz"
 
-# Timezone constants (reuse same set as wizard)
+# Timezone constants
 CB_MP_TZ_PAGE = "mptz:page:"
 _TIME_RE = re.compile(r"^(\d{1,2}):(\d{2})$")
+_DT_RE   = re.compile(r"^(\d{1,2})/(\d{1,2})/(\d{4})\s+(\d{1,2}):(\d{2})$")
+
+_QM_CHAT_PAGE_SIZE = 5
 
 TIMEZONES: list[tuple[str, str]] = [
     ("UTC",              "UTC"),
@@ -169,8 +196,6 @@ async def _edit(query: Any, text: str, keyboard: InlineKeyboardMarkup) -> None:
     try:
         await query.edit_message_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
     except Exception:
-        # edit_message_text can fail if the message is too old or already deleted;
-        # fall back to a fresh message so the user is never left without a prompt.
         try:
             await query.message.reply_text(text, parse_mode=ParseMode.MARKDOWN, reply_markup=keyboard)
         except Exception:
@@ -205,11 +230,48 @@ def _parse_slots(raw: str) -> list[str] | None:
     return sorted(set(parsed))
 
 
+def _parse_run_time(text: str, tz: str) -> datetime | None:
+    """
+    Parse user-supplied date/time string into an aware UTC datetime.
+    Accepts:
+      • "HH:MM"               — today in the given tz (tomorrow if already past)
+      • "DD/MM/YYYY HH:MM"    — specific date in the given tz
+    Returns None on parse failure or invalid date.
+    """
+    text = text.strip()
+    try:
+        zone: Any = pytz.timezone(tz) if tz != "UTC" else timezone.utc
+    except pytz.exceptions.UnknownTimeZoneError:
+        zone = timezone.utc
+
+    # Try full date first
+    m = _DT_RE.match(text)
+    if m:
+        d, mo, y, h, mi = (int(x) for x in m.groups())
+        try:
+            naive = datetime(y, mo, d, h, mi, 0)
+        except ValueError:
+            return None
+        if isinstance(zone, pytz.BaseTzInfo):
+            return zone.localize(naive).astimezone(timezone.utc)
+        return naive.replace(tzinfo=zone).astimezone(timezone.utc)
+
+    # Try HH:MM only
+    m2 = _TIME_RE.match(text)
+    if m2:
+        h, mi = int(m2.group(1)), int(m2.group(2))
+        if h > 23 or mi > 59:
+            return None
+        now = datetime.now(tz=zone)
+        candidate = now.replace(hour=h, minute=mi, second=0, microsecond=0)
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        return candidate.astimezone(timezone.utc)
+
+    return None
+
+
 def _next_slot_datetime(slots: list[str], tz_str: str = "UTC") -> tuple[str, datetime] | None:
-    """
-    Find the next slot time that is strictly in the future.
-    Returns (slot_label, aware_datetime) or None if slots is empty.
-    """
     if not slots:
         return None
     try:
@@ -268,6 +330,28 @@ def _qm_tz_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(rows)
 
 
+def _qm_ac_tz_keyboard(page: int = 0) -> InlineKeyboardMarkup:
+    """Timezone picker keyboard for the Add Content wizard."""
+    start = page * TZ_PAGE_SIZE
+    end   = start + TZ_PAGE_SIZE
+    rows = [
+        [InlineKeyboardButton(label, callback_data=f"qmactz:{tz}")]
+        for tz, label in TIMEZONES[start:end]
+    ]
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("◀️ Prev", callback_data=f"{CB_QM_AC_TZ_PAGE}{page - 1}"))
+    if end < len(TIMEZONES):
+        nav.append(InlineKeyboardButton("▶️ Next", callback_data=f"{CB_QM_AC_TZ_PAGE}{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([
+        InlineKeyboardButton("⬅️ Back",   callback_data=CB_BACK_QM_AC_DATE),
+        InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
 def _mp_tz_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     start = page * TZ_PAGE_SIZE
     end   = start + TZ_PAGE_SIZE
@@ -287,6 +371,56 @@ def _mp_tz_keyboard(page: int = 0) -> InlineKeyboardMarkup:
         InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL),
     ])
     return InlineKeyboardMarkup(rows)
+
+
+def _qm_group_picker_keyboard(
+    groups: list[dict],
+    page: int,
+    pick_prefix: str,
+    page_prefix: str,
+    manual_cb: str,
+    back_cb: str,
+) -> InlineKeyboardMarkup:
+    """Generic group-picker keyboard shared by Set Slots and Add Content flows."""
+    rows: list[list[InlineKeyboardButton]] = []
+    total  = len(groups)
+    start  = page * _QM_CHAT_PAGE_SIZE
+    end    = min(start + _QM_CHAT_PAGE_SIZE, total)
+    type_icon = {"channel": "📢", "supergroup": "👥", "group": "👥"}
+    for g in groups[start:end]:
+        icon  = type_icon.get(g.get("chat_type", ""), "💬")
+        title = (g.get("title") or f"Chat {g['chat_id']}")[:35]
+        rows.append([InlineKeyboardButton(
+            f"{icon} {title}",
+            callback_data=f"{pick_prefix}{g['chat_id']}",
+        )])
+    nav: list[InlineKeyboardButton] = []
+    if page > 0:
+        nav.append(InlineKeyboardButton("⬅️ Prev", callback_data=f"{page_prefix}{page - 1}"))
+    if end < total:
+        nav.append(InlineKeyboardButton("Next ➡️", callback_data=f"{page_prefix}{page + 1}"))
+    if nav:
+        rows.append(nav)
+    rows.append([InlineKeyboardButton("✏️ Enter ID manually", callback_data=manual_cb)])
+    rows.append([
+        InlineKeyboardButton("⬅️ Back",   callback_data=back_cb),
+        InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL),
+    ])
+    return InlineKeyboardMarkup(rows)
+
+
+def _qm_no_groups_keyboard(manual_cb: str, back_cb: str, bot_username: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton(
+            "➕ Add Bot to a Group",
+            url=f"https://t.me/{bot_username}?startgroup=start",
+        )],
+        [InlineKeyboardButton("✏️ Enter ID manually", callback_data=manual_cb)],
+        [
+            InlineKeyboardButton("⬅️ Back",   callback_data=back_cb),
+            InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL),
+        ],
+    ])
 
 
 # ============================================================================
@@ -316,30 +450,114 @@ async def enter_queue_manager(update: Update, context: ContextTypes.DEFAULT_TYPE
         "Set up daily posting slots and auto-fill them with content.\n\n"
         "📌 *How it works:*\n"
         "1. Set daily time slots (e.g. 09:00, 14:00, 20:00)\n"
-        "2. Add content — it fills the next available slot automatically\n"
+        "2. Add content — specify the exact date/time to post\n"
         "3. The bot fires each piece of content at its assigned time",
         _qm_menu_keyboard(),
     )
     return QM_MENU
 
 
-# ── Set Slots ──
+# ── Set Slots — Step 1: Group Picker ──
 
 async def cb_qm_set_slots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry to Set Slots wizard — show group picker."""
     query = update.callback_query
     _w(context).pop("slots_chat_id", None)
     _w(context).pop("pending_slots", None)
+
+    user_id      = query.from_user.id
+    bot_username = (await query.get_bot().get_me()).username
+    groups = await list_groups_for_user(user_id)
+
+    if groups:
+        await _edit(query,
+            "⏰ *Set Daily Slots — Step 1 of 3*\n\n"
+            f"🗂 Choose the group or channel to set slots for:\n"
+            f"_(Showing {min(_QM_CHAT_PAGE_SIZE, len(groups))} of {len(groups)} known chats)_",
+            _qm_group_picker_keyboard(
+                groups, 0,
+                CB_QM_SS_PICK, CB_QM_SS_PAGE, CB_QM_SS_MANUAL,
+                CB_BACK_QM_MENU,
+            ),
+        )
+    else:
+        await _edit(query,
+            "⏰ *Set Daily Slots — Step 1 of 3*\n\n"
+            "⚠️ *No groups found.*\n\n"
+            "Add the bot to your group first, then come back.\n"
+            "_Or enter the Chat ID manually._",
+            _qm_no_groups_keyboard(CB_QM_SS_MANUAL, CB_BACK_QM_MENU, bot_username),
+        )
+    return QM_SET_SLOTS_CHAT_ID
+
+
+async def cb_qm_ss_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Set Slots — user tapped a group button."""
+    query = update.callback_query
+    raw = (query.data or "").replace(CB_QM_SS_PICK, "", 1)
+    try:
+        chat_id = int(raw)
+    except ValueError:
+        await query.answer("Invalid selection.", show_alert=True)
+        return QM_SET_SLOTS_CHAT_ID
+
+    user_id = query.from_user.id
+    groups  = await list_groups_for_user(user_id)
+    title_map = {g["chat_id"]: (g.get("title") or str(g["chat_id"])) for g in groups}
+    title = title_map.get(chat_id, str(chat_id))
+
+    _w(context)["slots_chat_id"]    = chat_id
+    _w(context)["slots_chat_title"] = title
+
+    await _edit(query,
+        f"✅ Selected: *{title}* (`{chat_id}`)\n\n"
+        "⏰ *Set Daily Slots — Step 2 of 3*\n\n"
+        "Enter the daily posting times separated by commas or spaces.\n\n"
+        "Example: `09:00, 14:00, 20:00`",
+        nav_keyboard(back_data=CB_BACK_QM_SLOT_CHAT),
+    )
+    return QM_SET_SLOTS
+
+
+async def cb_qm_ss_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Set Slots — paginate group list."""
+    query = update.callback_query
+    raw   = (query.data or "").replace(CB_QM_SS_PAGE, "", 1)
+    page  = int(raw) if raw.isdigit() else 0
+    user_id      = query.from_user.id
+    bot_username = (await query.get_bot().get_me()).username
+    groups = await list_groups_for_user(user_id)
+    total  = len(groups)
+    start  = page * _QM_CHAT_PAGE_SIZE
+    shown  = min(_QM_CHAT_PAGE_SIZE, total - start)
     await _edit(query,
         "⏰ *Set Daily Slots — Step 1 of 3*\n\n"
-        "Type the *Chat ID* of the channel/group to set slots for:\n"
-        "_(Use /id in the group to get the ID)_",
+        f"🗂 Choose the group or channel:\n"
+        f"_(Showing {shown} of {total} known chats)_",
+        _qm_group_picker_keyboard(
+            groups, page,
+            CB_QM_SS_PICK, CB_QM_SS_PAGE, CB_QM_SS_MANUAL,
+            CB_BACK_QM_MENU,
+        ),
+    )
+    return QM_SET_SLOTS_CHAT_ID
+
+
+async def cb_qm_ss_manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Set Slots — user wants to type Chat ID manually."""
+    query = update.callback_query
+    await _edit(query,
+        "⏰ *Set Daily Slots — Step 1 of 3*\n\n"
+        "✏️ Type the *Chat ID* of the channel/group:\n"
+        "_(Use /id in the group to get the ID)_\n\n"
+        "Example: `-1001234567890`",
         nav_keyboard(back_data=CB_BACK_QM_MENU),
     )
     return QM_SET_SLOTS_CHAT_ID
 
 
 async def recv_qm_slots_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Step 1 — receive chat ID for the slots wizard."""
+    """Set Slots — receive manually-typed Chat ID."""
     text = (update.message.text or "").strip()
     try:
         chat_id = int(text)
@@ -350,7 +568,8 @@ async def recv_qm_slots_chat_id(update: Update, context: ContextTypes.DEFAULT_TY
         )
         return QM_SET_SLOTS_CHAT_ID
 
-    _w(context)["slots_chat_id"] = chat_id
+    _w(context)["slots_chat_id"]    = chat_id
+    _w(context)["slots_chat_title"] = str(chat_id)
     await update.message.reply_text(
         f"✅ Chat: `{chat_id}`\n\n"
         "⏰ *Set Daily Slots — Step 2 of 3*\n\n"
@@ -363,7 +582,7 @@ async def recv_qm_slots_chat_id(update: Update, context: ContextTypes.DEFAULT_TY
 
 
 async def recv_qm_slots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Step 2 — receive HH:MM time list, then show timezone picker."""
+    """Set Slots — receive HH:MM time list, then show timezone picker."""
     text = (update.message.text or "").strip()
     slots = _parse_slots(text)
     if not slots:
@@ -388,8 +607,8 @@ async def recv_qm_slots(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def cb_qm_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Step 3 — user picked a timezone; save slots + timezone to DB."""
-    query = update.callback_query
+    """Set Slots — user picked timezone; save slots + timezone to DB."""
+    query  = update.callback_query
     tz_key = (query.data or "").replace("qmtz:", "", 1)
     try:
         pytz.timezone(tz_key)
@@ -398,8 +617,9 @@ async def cb_qm_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return QM_SET_SLOTS_TZ
 
     w = _w(context)
-    user_id: int = query.from_user.id  # type: ignore[union-attr]
-    chat_id: int = w["slots_chat_id"]
+    user_id: int   = query.from_user.id  # type: ignore[union-attr]
+    chat_id: int   = w["slots_chat_id"]
+    chat_title: str = w.get("slots_chat_title", str(chat_id))
     slots: list[str] = w["pending_slots"]
     tz_label = next((lbl for k, lbl in TIMEZONES if k == tz_key), tz_key)
 
@@ -408,18 +628,22 @@ async def cb_qm_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await upsert_queue_slots(user_id, chat_id, slots, tz_key)
     except Exception as exc:
         logger.exception("upsert_queue_slots failed: %s", exc)
-        await query.edit_message_text(f"❌ Database error: `{exc}`", parse_mode=ParseMode.MARKDOWN)
         _clear(context)
-        return QM_MENU
+        chat_id_dm = query.message.chat_id
+        await chat_cleanup.cleanup(context, chat_id_dm, keep_message_id=query.message.message_id)
+        await query.edit_message_text(f"❌ Database error: `{exc}`", parse_mode=ParseMode.MARKDOWN)
+        return ConversationHandler.END
 
     slot_display = "  •  ".join(slots)
     _clear(context)
+    # ── Cleanup wizard messages, keep this success message ──
+    await chat_cleanup.cleanup(context, query.message.chat_id, keep_message_id=query.message.message_id)
     await query.edit_message_text(
         f"✅ *Daily slots saved!*\n\n"
-        f"🗂 Chat: `{chat_id}`\n"
+        f"🗂 Chat: *{chat_title}* (`{chat_id}`)\n"
         f"⏰ Slots: `{slot_display}`\n"
         f"🌍 Timezone: `{tz_label}`\n\n"
-        "Now use *Add Content to Queue* to fill them!",
+        "Now use *Add Content to Queue* to schedule posts!",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=_qm_menu_keyboard(),
     )
@@ -427,10 +651,10 @@ async def cb_qm_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 async def cb_qm_tz_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Pagination for the QM timezone picker."""
-    query = update.callback_query
+    """Pagination for the QM timezone picker (Set Slots)."""
+    query    = update.callback_query
     page_str = (query.data or "").replace(CB_QM_TZ_PAGE, "")
-    page = int(page_str) if page_str.isdigit() else 0
+    page     = int(page_str) if page_str.isdigit() else 0
     _w(context)["qm_tz_page"] = page
     await query.answer()
     await query.edit_message_text(
@@ -442,26 +666,44 @@ async def cb_qm_tz_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def cb_back_qm_slot_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Back from slots input (Step 2) → re-ask for Chat ID (Step 1)."""
+    """Back from slots input → re-show group picker."""
     query = update.callback_query
     _w(context).pop("slots_chat_id", None)
-    await _edit(query,
-        "⏰ *Set Daily Slots — Step 1 of 3*\n\n"
-        "Type the *Chat ID* of the channel/group to set slots for:\n"
-        "_(Use /id in the group to get the ID)_",
-        nav_keyboard(back_data=CB_BACK_QM_MENU),
-    )
+    _w(context).pop("slots_chat_title", None)
+
+    user_id      = query.from_user.id
+    bot_username = (await query.get_bot().get_me()).username
+    groups = await list_groups_for_user(user_id)
+
+    if groups:
+        await _edit(query,
+            "⏰ *Set Daily Slots — Step 1 of 3*\n\n"
+            f"🗂 Choose the group or channel:\n"
+            f"_(Showing {min(_QM_CHAT_PAGE_SIZE, len(groups))} of {len(groups)} known chats)_",
+            _qm_group_picker_keyboard(
+                groups, 0,
+                CB_QM_SS_PICK, CB_QM_SS_PAGE, CB_QM_SS_MANUAL,
+                CB_BACK_QM_MENU,
+            ),
+        )
+    else:
+        await _edit(query,
+            "⏰ *Set Daily Slots — Step 1 of 3*\n\n"
+            "⚠️ No groups found. Enter Chat ID manually.",
+            _qm_no_groups_keyboard(CB_QM_SS_MANUAL, CB_BACK_QM_MENU, bot_username),
+        )
     return QM_SET_SLOTS_CHAT_ID
 
 
 async def cb_back_qm_slot_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Back from timezone picker (Step 3) → re-ask for slots (Step 2)."""
-    query = update.callback_query
+    """Back from timezone picker → re-ask for slots."""
+    query   = update.callback_query
     chat_id = _w(context).get("slots_chat_id", "?")
+    title   = _w(context).get("slots_chat_title", str(chat_id))
     _w(context).pop("pending_slots", None)
     await query.answer()
     await query.edit_message_text(
-        f"✅ Chat: `{chat_id}`\n\n"
+        f"✅ Chat: *{title}* (`{chat_id}`)\n\n"
         "⏰ *Set Daily Slots — Step 2 of 3*\n\n"
         "Enter the daily posting times separated by commas or spaces.\n\n"
         "Example: `09:00, 14:00, 20:00`",
@@ -474,16 +716,104 @@ async def cb_back_qm_slot_tz(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ── Add Content to Queue ──
 
 async def cb_qm_add_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Entry to Add Content wizard — show group picker."""
+    query = update.callback_query
+    # Clear only add-content wizard keys
+    for k in ("add_chat_id", "add_chat_title", "media_file_id", "media_type",
+              "content_text", "add_date_str", "add_tz", "add_tz_page"):
+        _w(context).pop(k, None)
+
+    user_id      = query.from_user.id
+    bot_username = (await query.get_bot().get_me()).username
+    groups = await list_groups_for_user(user_id)
+
+    if groups:
+        await _edit(query,
+            "➕ *Add Content to Queue — Step 1 of 4*\n\n"
+            f"🗂 Choose the group or channel:\n"
+            f"_(Showing {min(_QM_CHAT_PAGE_SIZE, len(groups))} of {len(groups)} known chats)_",
+            _qm_group_picker_keyboard(
+                groups, 0,
+                CB_QM_AC_PICK, CB_QM_AC_PAGE, CB_QM_AC_MANUAL,
+                CB_BACK_QM_MENU,
+            ),
+        )
+    else:
+        await _edit(query,
+            "➕ *Add Content to Queue — Step 1 of 4*\n\n"
+            "⚠️ *No groups found.*\n\n"
+            "Add the bot to your group first, or enter the Chat ID manually.",
+            _qm_no_groups_keyboard(CB_QM_AC_MANUAL, CB_BACK_QM_MENU, bot_username),
+        )
+    return QM_ADD_CHAT_ID
+
+
+async def cb_qm_ac_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add Content — user tapped a group button."""
+    query = update.callback_query
+    raw   = (query.data or "").replace(CB_QM_AC_PICK, "", 1)
+    try:
+        chat_id = int(raw)
+    except ValueError:
+        await query.answer("Invalid selection.", show_alert=True)
+        return QM_ADD_CHAT_ID
+
+    user_id = query.from_user.id
+    groups  = await list_groups_for_user(user_id)
+    title_map = {g["chat_id"]: (g.get("title") or str(g["chat_id"])) for g in groups}
+    title = title_map.get(chat_id, str(chat_id))
+
+    _w(context)["add_chat_id"]    = chat_id
+    _w(context)["add_chat_title"] = title
+
+    await _edit(query,
+        f"✅ Selected: *{title}* (`{chat_id}`)\n\n"
+        "➕ *Add Content — Step 2 of 4*\n\n"
+        "📝 Now send the content you want to add to the queue.\n"
+        "_(Text, photo, video, document, audio, etc.)_",
+        nav_keyboard(back_data=CB_BACK_QM_AC_CHAT),
+    )
+    return QM_ADD_CONTENT
+
+
+async def cb_qm_ac_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add Content — paginate group list."""
+    query = update.callback_query
+    raw   = (query.data or "").replace(CB_QM_AC_PAGE, "", 1)
+    page  = int(raw) if raw.isdigit() else 0
+    user_id      = query.from_user.id
+    bot_username = (await query.get_bot().get_me()).username
+    groups = await list_groups_for_user(user_id)
+    total  = len(groups)
+    start  = page * _QM_CHAT_PAGE_SIZE
+    shown  = min(_QM_CHAT_PAGE_SIZE, total - start)
+    await _edit(query,
+        "➕ *Add Content to Queue — Step 1 of 4*\n\n"
+        f"🗂 Choose the group or channel:\n"
+        f"_(Showing {shown} of {total} known chats)_",
+        _qm_group_picker_keyboard(
+            groups, page,
+            CB_QM_AC_PICK, CB_QM_AC_PAGE, CB_QM_AC_MANUAL,
+            CB_BACK_QM_MENU,
+        ),
+    )
+    return QM_ADD_CHAT_ID
+
+
+async def cb_qm_ac_manual(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add Content — user wants to type Chat ID manually."""
     query = update.callback_query
     await _edit(query,
-        "➕ *Add Content to Queue*\n\n"
-        "First, type the *Chat ID* of the target chat:",
+        "➕ *Add Content to Queue — Step 1 of 4*\n\n"
+        "✏️ Type the *Chat ID* of the target chat:\n\n"
+        "Example: `-1001234567890`",
         nav_keyboard(back_data=CB_BACK_QM_MENU),
     )
     return QM_ADD_CHAT_ID
 
 
 async def recv_qm_add_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add Content — receive manually-typed Chat ID."""
     text = (update.message.text or "").strip()
     try:
         chat_id = int(text)
@@ -491,18 +821,21 @@ async def recv_qm_add_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE
         await update.message.reply_text("⚠️ Enter a valid numeric Chat ID.", parse_mode=ParseMode.MARKDOWN)
         return QM_ADD_CHAT_ID
 
-    _w(context)["add_chat_id"] = chat_id
+    _w(context)["add_chat_id"]    = chat_id
+    _w(context)["add_chat_title"] = str(chat_id)
     await update.message.reply_text(
         f"✅ Chat: `{chat_id}`\n\n"
-        "📝 Now send the content you want to add to the queue.\n"
-        "(Text, photo, video, document, etc.)",
+        "➕ *Add Content — Step 2 of 4*\n\n"
+        "📝 Send the content you want to add to the queue.\n"
+        "_(Text, photo, video, document, audio, etc.)_",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=nav_keyboard(back_data=CB_BACK_QM_MENU),
+        reply_markup=nav_keyboard(back_data=CB_BACK_QM_AC_CHAT),
     )
     return QM_ADD_CONTENT
 
 
 async def recv_qm_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add Content — Step 2: receive content, then ask for date/time."""
     msg = update.message
     w   = _w(context)
 
@@ -525,59 +858,258 @@ async def recv_qm_content(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await msg.reply_text("⚠️ Unsupported content type. Please send text or media.")
         return QM_ADD_CONTENT
 
-    user_id: int = msg.from_user.id  # type: ignore[union-attr]
-    chat_id: int = w["add_chat_id"]
+    await msg.reply_text(
+        "✅ *Content saved.*\n\n"
+        "🕐 *Add Content — Step 3 of 4 — Posting Date/Time*\n\n"
+        "When should this content be posted?\n\n"
+        "Type in one of these formats:\n"
+        "• `DD/MM/YYYY HH:MM` — specific date (e.g. `25/12/2025 09:00`)\n"
+        "• `HH:MM` — today at that time (tomorrow if already past)\n\n"
+        "_Timezone will be set in the next step._",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=nav_keyboard(back_data=CB_BACK_QM_AC_CONTENT),
+    )
+    return QM_ADD_DATE
 
-    # Look up existing slots
-    queue_doc = await get_queue(user_id, chat_id)
-    slots: list[str] = queue_doc["slots"] if queue_doc and queue_doc.get("slots") else []
 
-    if not slots:
-        await msg.reply_text(
-            "⚠️ No slots configured for this chat yet.\n"
-            "Use *Set Daily Slots* first to define posting times.",
+async def recv_qm_add_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add Content — Step 3: receive date/time string, ask for timezone."""
+    text = (update.message.text or "").strip()
+    # Validate format (we need timezone before we can compute the actual dt)
+    is_full_dt = bool(_DT_RE.match(text))
+    is_hhmm    = bool(_TIME_RE.match(text))
+    if not (is_full_dt or is_hhmm):
+        await update.message.reply_text(
+            "⚠️ *Invalid format.*\n\n"
+            "Use one of:\n"
+            "• `DD/MM/YYYY HH:MM` — e.g. `25/12/2025 09:00`\n"
+            "• `HH:MM` — e.g. `09:00`",
             parse_mode=ParseMode.MARKDOWN,
-            reply_markup=_qm_menu_keyboard(),
         )
-        return QM_MENU
+        return QM_ADD_DATE
 
-    tz_str = queue_doc.get("timezone", "UTC") if queue_doc else "UTC"
-    result = _next_slot_datetime(slots, tz_str)
-    if result is None:
-        await msg.reply_text("⚠️ No upcoming slot found.", parse_mode=ParseMode.MARKDOWN)
-        return QM_MENU
+    # Additional validation for full date
+    if is_full_dt:
+        m = _DT_RE.match(text)
+        d, mo, y, h, mi = (int(x) for x in m.groups())
+        try:
+            datetime(y, mo, d, h, mi)
+        except ValueError:
+            await update.message.reply_text(
+                "⚠️ That date doesn't exist (e.g. 30/02/2025). Please enter a valid date.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return QM_ADD_DATE
 
-    slot_label, slot_dt = result
-    w["assigned_slot"]   = slot_label
-    w["assigned_slot_dt"] = slot_dt.isoformat()
+    _w(context)["add_date_str"]  = text
+    _w(context)["add_tz_page"]   = 0
+    await update.message.reply_text(
+        f"✅ Date/time: `{text}`\n\n"
+        "🌍 *Add Content — Step 4 of 4 — Timezone*\n\n"
+        "Select the timezone for this posting time:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_qm_ac_tz_keyboard(0),
+    )
+    return QM_ADD_TZ
+
+
+async def cb_qm_ac_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add Content — user picked timezone; show confirmation summary."""
+    query  = update.callback_query
+    tz_key = (query.data or "").replace("qmactz:", "", 1)
+    try:
+        pytz.timezone(tz_key)
+    except pytz.exceptions.UnknownTimeZoneError:
+        await query.answer("Unknown timezone — choose from the list.", show_alert=True)
+        return QM_ADD_TZ
+
+    await query.answer()
+    w = _w(context)
+    w["add_tz"] = tz_key
+
+    date_str  = w.get("add_date_str", "")
+    tz_label  = next((lbl for k, lbl in TIMEZONES if k == tz_key), tz_key)
+    chat_id   = w.get("add_chat_id", "?")
+    chat_title = w.get("add_chat_title", str(chat_id))
+    media_type = w.get("media_type")
+
+    # Validate that date_str + timezone produces a valid future datetime
+    dt_utc = _parse_run_time(date_str, tz_key)
+    if dt_utc is None:
+        await query.edit_message_text(
+            "⚠️ Could not parse the date/time with the selected timezone.\n"
+            "Please go back and try again.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Back", callback_data=CB_BACK_QM_AC_DATE),
+            ]]),
+        )
+        return QM_ADD_TZ
+
+    now_utc = datetime.now(tz=timezone.utc)
+    if dt_utc <= now_utc:
+        await query.edit_message_text(
+            f"⚠️ That time (`{date_str}` in `{tz_label}`) is in the past.\n"
+            "Please go back and enter a future date/time.",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[
+                InlineKeyboardButton("⬅️ Back", callback_data=CB_BACK_QM_AC_DATE),
+            ]]),
+        )
+        return QM_ADD_TZ
+
+    w["add_dt_utc_iso"] = dt_utc.isoformat()
 
     content_preview = (w.get("content_text") or "")[:60]
-    if w.get("media_type"):
-        content_preview = f"[{w['media_type'].upper()}] {content_preview}"
+    if media_type:
+        content_preview = f"[{media_type.upper()}] {content_preview}"
 
-    await msg.reply_text(
-        f"📋 *Queue Assignment Preview*\n\n"
-        f"🗂 Chat: `{chat_id}`\n"
+    # Format display time in selected timezone
+    try:
+        zone_for_display = pytz.timezone(tz_key)
+        dt_local_display = dt_utc.astimezone(zone_for_display).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        dt_local_display = date_str
+
+    await query.edit_message_text(
+        f"📋 *Queue — Confirmation*\n\n"
+        f"🗂 Chat: *{chat_title}* (`{chat_id}`)\n"
         f"📝 Content: `{content_preview or '—'}`\n"
-        f"⏰ Next slot: `{slot_label}` (next occurrence)\n\n"
-        "Tap *✅ Confirm* to add to queue:",
+        f"🕐 Post at: `{dt_local_display}` ({tz_label})\n\n"
+        "Tap *✅ Confirm* to schedule:",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=confirm_keyboard(CB_QM_CONFIRM_ADD, CB_BACK_QM_MENU),
+        reply_markup=confirm_keyboard(CB_QM_CONFIRM_ADD, CB_BACK_QM_AC_TZ),
     )
     return QM_CONFIRM_SLOT
 
 
-async def cb_qm_confirm_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def cb_qm_ac_tz_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add Content — paginate timezone picker."""
+    query    = update.callback_query
+    page_str = (query.data or "").replace(CB_QM_AC_TZ_PAGE, "")
+    page     = int(page_str) if page_str.isdigit() else 0
+    _w(context)["add_tz_page"] = page
+    await query.answer()
+    await query.edit_message_text(
+        "🌍 *Select your timezone:*",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_qm_ac_tz_keyboard(page),
+    )
+    return QM_ADD_TZ
+
+
+async def cb_back_qm_ac_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add Content — back to group picker from content step."""
     query = update.callback_query
-    await query.answer("Adding to queue…")
+    for k in ("add_chat_id", "add_chat_title", "media_file_id", "media_type",
+              "content_text", "add_date_str", "add_tz", "add_tz_page", "add_dt_utc_iso"):
+        _w(context).pop(k, None)
+
+    user_id      = query.from_user.id
+    bot_username = (await query.get_bot().get_me()).username
+    groups = await list_groups_for_user(user_id)
+
+    if groups:
+        await _edit(query,
+            "➕ *Add Content to Queue — Step 1 of 4*\n\n"
+            f"🗂 Choose the group or channel:\n"
+            f"_(Showing {min(_QM_CHAT_PAGE_SIZE, len(groups))} of {len(groups)} known chats)_",
+            _qm_group_picker_keyboard(
+                groups, 0,
+                CB_QM_AC_PICK, CB_QM_AC_PAGE, CB_QM_AC_MANUAL,
+                CB_BACK_QM_MENU,
+            ),
+        )
+    else:
+        await _edit(query,
+            "➕ *Add Content to Queue — Step 1 of 4*\n\n"
+            "⚠️ No groups found. Enter Chat ID manually.",
+            _qm_no_groups_keyboard(CB_QM_AC_MANUAL, CB_BACK_QM_MENU, bot_username),
+        )
+    return QM_ADD_CHAT_ID
+
+
+async def cb_back_qm_ac_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add Content — back to content send step from date step."""
+    query = update.callback_query
     w = _w(context)
+    for k in ("media_file_id", "media_type", "content_text", "add_date_str",
+              "add_tz", "add_tz_page", "add_dt_utc_iso"):
+        w.pop(k, None)
+    chat_id   = w.get("add_chat_id", "?")
+    chat_title = w.get("add_chat_title", str(chat_id))
+    await _edit(query,
+        f"✅ Chat: *{chat_title}* (`{chat_id}`)\n\n"
+        "➕ *Add Content — Step 2 of 4*\n\n"
+        "📝 Send the content you want to add to the queue.\n"
+        "_(Text, photo, video, document, audio, etc.)_",
+        nav_keyboard(back_data=CB_BACK_QM_AC_CHAT),
+    )
+    return QM_ADD_CONTENT
+
+
+async def cb_back_qm_ac_date(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add Content — back to date/time entry from timezone step."""
+    query = update.callback_query
+    _w(context).pop("add_tz", None)
+    _w(context).pop("add_dt_utc_iso", None)
+    await _edit(query,
+        "🕐 *Add Content — Step 3 of 4 — Posting Date/Time*\n\n"
+        "When should this content be posted?\n\n"
+        "• `DD/MM/YYYY HH:MM` — specific date (e.g. `25/12/2025 09:00`)\n"
+        "• `HH:MM` — today at that time (tomorrow if already past)",
+        nav_keyboard(back_data=CB_BACK_QM_AC_CONTENT),
+    )
+    return QM_ADD_DATE
+
+
+async def cb_back_qm_ac_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add Content — back to timezone picker from confirm step."""
+    query = update.callback_query
+    _w(context).pop("add_dt_utc_iso", None)
+    page = _w(context).get("add_tz_page", 0)
+    date_str = _w(context).get("add_date_str", "")
+    await query.answer()
+    await query.edit_message_text(
+        f"✅ Date/time: `{date_str}`\n\n"
+        "🌍 *Add Content — Step 4 of 4 — Timezone*\n\n"
+        "Select the timezone for this posting time:",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=_qm_ac_tz_keyboard(page),
+    )
+    return QM_ADD_TZ
+
+
+async def cb_qm_confirm_add(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Add Content — Confirm: save to DB + cleanup all wizard messages."""
+    query   = update.callback_query
+    await query.answer("Scheduling…")
+    w       = _w(context)
     user_id: int = query.from_user.id  # type: ignore[union-attr]
     chat_id: int = w["add_chat_id"]
+    chat_title: str = w.get("add_chat_title", str(chat_id))
+
+    # Reconstruct the scheduled datetime from stored ISO string
+    dt_utc_iso = w.get("add_dt_utc_iso")
+    if not dt_utc_iso:
+        await query.answer("Session expired — please start again.", show_alert=True)
+        _clear(context)
+        return QM_MENU
+
+    slot_dt = datetime.fromisoformat(dt_utc_iso)
+    tz_key  = w.get("add_tz", "UTC")
+    tz_label = next((lbl for k, lbl in TIMEZONES if k == tz_key), tz_key)
+
+    # Format display time in selected timezone
+    try:
+        zone_for_display = pytz.timezone(tz_key)
+        dt_local_display = slot_dt.astimezone(zone_for_display).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        dt_local_display = w.get("add_date_str", "?")
 
     content_item: dict = {
-        "slot":          w.get("assigned_slot"),
-        "scheduled_for": w.get("assigned_slot_dt"),
-        "posted":        False,
+        "scheduled_for": dt_utc_iso,
+        "posted": False,
     }
     if w.get("content_text"):
         content_item["text"] = w["content_text"]
@@ -588,15 +1120,13 @@ async def cb_qm_confirm_add(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     try:
         await add_to_queue(user_id, chat_id, content_item)
-        # Also create a formal scheduled_post document so the scheduler can fire it
-        from datetime import datetime as _dt
-        slot_dt = _dt.fromisoformat(w["assigned_slot_dt"])
         doc = build_scheduled_post(
             user_id=user_id,
             chat_id=chat_id,
             content_text=w.get("content_text"),
             content_media_file_id=w.get("media_file_id"),
             content_media_type=w.get("media_type"),
+            timezone_str=tz_key,
             recurrence_type="once",
             next_run_at=slot_dt,
             max_runs=1,
@@ -605,15 +1135,21 @@ async def cb_qm_confirm_add(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     except Exception as exc:
         logger.exception("Queue add failed: %s", exc)
         _clear(context)
-        chat_id_for_cleanup = query.message.chat_id
-        await chat_cleanup.cleanup(context, chat_id_for_cleanup, keep_message_id=query.message.message_id)
-        await query.edit_message_text(f"❌ Error: `{exc}`", parse_mode=ParseMode.MARKDOWN)
-        return ConversationHandler.END
+        await chat_cleanup.cleanup(context, query.message.chat_id, keep_message_id=query.message.message_id)
+        await query.edit_message_text(
+            f"❌ *Error saving post:*\n`{exc}`",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_qm_menu_keyboard(),
+        )
+        return QM_MENU
 
     _clear(context)
+    # ── Cleanup all wizard messages, keep this success message ──
+    await chat_cleanup.cleanup(context, query.message.chat_id, keep_message_id=query.message.message_id)
     await query.edit_message_text(
-        f"✅ *Added to queue!*\n\n"
-        f"⏰ Will post at slot `{w.get('assigned_slot')}`\n"
+        f"✅ *Scheduled successfully!*\n\n"
+        f"🗂 Chat: *{chat_title}* (`{chat_id}`)\n"
+        f"🕐 Post at: `{dt_local_display}` ({tz_label})\n"
         f"🆔 Post ID: `{post_id}`",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=_qm_menu_keyboard(),
@@ -848,7 +1384,6 @@ async def recv_mp_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if item.get("media_type"):
         preview = f"[{item['media_type'].upper()}] {preview}"
 
-    # Check if this is the first item — if so, prompt for interval setup
     try:
         db    = await get_db()
         pool  = await db[COL_MEDIA_POOLS].find_one({"user_id": user_id, "chat_id": chat_id})
@@ -938,9 +1473,9 @@ async def recv_mp_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
 
 async def cb_mp_tz_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
+    query    = update.callback_query
     page_str = (query.data or "").replace(CB_MP_TZ_PAGE, "")
-    page = int(page_str) if page_str.isdigit() else 0
+    page     = int(page_str) if page_str.isdigit() else 0
     _pm(context)["tz_page"] = page
     await query.answer()
     await query.edit_message_text(
@@ -952,7 +1487,7 @@ async def cb_mp_tz_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
 
 async def cb_mp_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    query = update.callback_query
+    query  = update.callback_query
     tz_key = (query.data or "").replace("mptz:", "", 1)
     try:
         pytz.timezone(tz_key)
@@ -980,7 +1515,6 @@ async def cb_mp_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
 
 def _mp_summary_text(pm: dict) -> str:
-    """Build the schedule summary message text from pool-wizard context."""
     chat_id   = pm.get("mp_chat_id", "?")
     value     = pm.get("interval_value", "?")
     unit      = pm.get("interval_unit", "?")
@@ -1002,7 +1536,6 @@ def _mp_summary_text(pm: dict) -> str:
 
 
 async def cb_mp_ad_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """User chose Yes to auto-delete — ask for duration in hours."""
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
@@ -1016,7 +1549,6 @@ async def cb_mp_ad_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 async def recv_mp_ad_hours(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Receive the auto-delete hours value."""
     text = (update.message.text or "").strip().replace(",", ".")
     try:
         val = float(text)
@@ -1044,7 +1576,6 @@ async def recv_mp_ad_hours(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def cb_mp_ad_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """User chose No auto-delete — go to confirm summary."""
     query = update.callback_query
     pm = _pm(context)
     pm.pop("mp_ad_hours", None)
@@ -1063,7 +1594,6 @@ async def cb_mp_ad_no(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 
 async def cb_back_mp_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Back from auto-delete or confirm → re-show timezone picker."""
     query = update.callback_query
     pm = _pm(context)
     pm.pop("mp_ad_hours", None)
@@ -1127,17 +1657,20 @@ async def cb_mp_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         post_id = await insert_post(doc)
     except Exception as exc:
         logger.exception("media pool schedule save failed: %s", exc)
+        _clear_mp(context)
+        await chat_cleanup.cleanup(context, query.message.chat_id, keep_message_id=query.message.message_id)
         await query.edit_message_text(
             f"❌ Failed to save schedule: `{str(exc).replace(chr(96), chr(39))}`",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=_mp_menu_keyboard(),
         )
-        _clear_mp(context)
         return MP_MENU
 
     tz_label = next((lbl for k, lbl in TIMEZONES if k == tz_str), tz_str)
     first_run_display = "Now (in ~1 min)" if first_run == "now" else first_run
     _clear_mp(context)
+    # ── Cleanup wizard messages, keep success message ──
+    await chat_cleanup.cleanup(context, query.message.chat_id, keep_message_id=query.message.message_id)
     await query.edit_message_text(
         f"✅ *Posting schedule saved!*\n\n"
         f"🗂 Chat: `{chat_id}`\n"
@@ -1154,7 +1687,6 @@ async def cb_mp_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 # ── Back-navigation for interval wizard ──
 
 async def cb_back_mp_interval_value(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Back from interval-value step → return to MP menu."""
     query = update.callback_query
     _clear_mp(context)
     await _edit(query,
@@ -1165,7 +1697,6 @@ async def cb_back_mp_interval_value(update: Update, context: ContextTypes.DEFAUL
 
 
 async def cb_back_mp_interval_unit(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Back from interval-unit (unit picker) → re-ask interval value."""
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
@@ -1178,7 +1709,6 @@ async def cb_back_mp_interval_unit(update: Update, context: ContextTypes.DEFAULT
 
 
 async def cb_back_mp_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Back from first-run or timezone step → re-show unit picker."""
     query = update.callback_query
     pm = _pm(context)
     value = pm.get("interval_value", "?")
@@ -1217,8 +1747,8 @@ async def cb_mp_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     lines = ["🎲 *Your Media Pools*\n"]
     for doc in docs:
-        items   = doc.get("items", [])
-        total   = len(items)
+        items    = doc.get("items", [])
+        total    = len(items)
         unposted = sum(1 for i in items if not i.get("posted", False))
         lines.append(
             f"🗂 Chat `{doc['chat_id']}`\n"
@@ -1327,7 +1857,7 @@ async def cb_back_mp_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     return MP_MENU
 
 
-# ── Cancel ──
+# ── Cancel (with full message cleanup) ──
 
 async def cb_cancel_local(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -1345,8 +1875,14 @@ async def cb_cancel_local(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 # ============================================================================
 
 def build_queue_manager() -> ConversationHandler:
-    qm_tz_pattern  = r"^qmtz:(?!page:).+"
-    qm_tzp_pattern = r"^qmtz:page:\d+$"
+    qm_tz_pattern      = r"^qmtz:(?!page:).+"
+    qm_tzp_pattern     = r"^qmtz:page:\d+$"
+    qm_ac_tz_pattern   = r"^qmactz:(?!page:).+"
+    qm_ac_tzp_pattern  = r"^qmactz:page:\d+$"
+    qm_ss_pick_pattern = rf"^{re.escape(CB_QM_SS_PICK)}-?\d+$"
+    qm_ac_pick_pattern = rf"^{re.escape(CB_QM_AC_PICK)}-?\d+$"
+    qm_ss_page_pattern = rf"^{re.escape(CB_QM_SS_PAGE)}\d+$"
+    qm_ac_page_pattern = rf"^{re.escape(CB_QM_AC_PAGE)}\d+$"
 
     return ConversationHandler(
         entry_points=[CallbackQueryHandler(enter_queue_manager, pattern=f"^{CB_MANAGE_QUEUE}$")],
@@ -1357,13 +1893,18 @@ def build_queue_manager() -> ConversationHandler:
                 CallbackQueryHandler(cb_qm_view,        pattern=f"^{CB_QM_VIEW}$"),
                 CallbackQueryHandler(cb_qm_clear,       pattern=f"^{CB_QM_CLEAR}$"),
                 CallbackQueryHandler(cb_qm_clear_yes,   pattern=f"^{CB_QM_CLEAR_YES}$"),
-                CallbackQueryHandler(cb_qm_confirm_add, pattern=f"^{CB_QM_CONFIRM_ADD}$"),
                 CallbackQueryHandler(cb_back_qm_menu,   pattern=f"^{CB_BACK_QM_MENU}$"),
             ],
+
             # ── Set Slots wizard ──────────────────────────────────────────────
             QM_SET_SLOTS_CHAT_ID: [
+                # Group picker callbacks
+                CallbackQueryHandler(cb_qm_ss_pick,       pattern=qm_ss_pick_pattern),
+                CallbackQueryHandler(cb_qm_ss_page,       pattern=qm_ss_page_pattern),
+                CallbackQueryHandler(cb_qm_ss_manual,     pattern=f"^{CB_QM_SS_MANUAL}$"),
+                # Manual text entry
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_qm_slots_chat_id),
-                CallbackQueryHandler(cb_back_qm_menu,      pattern=f"^{CB_BACK_QM_MENU}$"),
+                CallbackQueryHandler(cb_back_qm_menu,     pattern=f"^{CB_BACK_QM_MENU}$"),
             ],
             QM_SET_SLOTS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_qm_slots),
@@ -1376,10 +1917,16 @@ def build_queue_manager() -> ConversationHandler:
                 CallbackQueryHandler(cb_back_qm_slot_tz,   pattern=f"^{CB_BACK_QM_SLOT_TZ}$"),
                 CallbackQueryHandler(cb_back_qm_menu,      pattern=f"^{CB_BACK_QM_MENU}$"),
             ],
+
             # ── Add Content wizard ────────────────────────────────────────────
             QM_ADD_CHAT_ID: [
+                # Group picker callbacks
+                CallbackQueryHandler(cb_qm_ac_pick,       pattern=qm_ac_pick_pattern),
+                CallbackQueryHandler(cb_qm_ac_page,       pattern=qm_ac_page_pattern),
+                CallbackQueryHandler(cb_qm_ac_manual,     pattern=f"^{CB_QM_AC_MANUAL}$"),
+                # Manual text entry
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_qm_add_chat_id),
-                CallbackQueryHandler(cb_back_qm_menu, pattern=f"^{CB_BACK_QM_MENU}$"),
+                CallbackQueryHandler(cb_back_qm_menu,     pattern=f"^{CB_BACK_QM_MENU}$"),
             ],
             QM_ADD_CONTENT: [
                 MessageHandler(
@@ -1388,11 +1935,24 @@ def build_queue_manager() -> ConversationHandler:
                      filters.VOICE) & ~filters.COMMAND,
                     recv_qm_content,
                 ),
-                CallbackQueryHandler(cb_back_qm_menu, pattern=f"^{CB_BACK_QM_MENU}$"),
+                CallbackQueryHandler(cb_back_qm_ac_chat,    pattern=f"^{CB_BACK_QM_AC_CHAT}$"),
+                CallbackQueryHandler(cb_back_qm_menu,        pattern=f"^{CB_BACK_QM_MENU}$"),
+            ],
+            QM_ADD_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recv_qm_add_date),
+                CallbackQueryHandler(cb_back_qm_ac_content,  pattern=f"^{CB_BACK_QM_AC_CONTENT}$"),
+                CallbackQueryHandler(cb_back_qm_menu,        pattern=f"^{CB_BACK_QM_MENU}$"),
+            ],
+            QM_ADD_TZ: [
+                CallbackQueryHandler(cb_qm_ac_tz,            pattern=qm_ac_tz_pattern),
+                CallbackQueryHandler(cb_qm_ac_tz_page,       pattern=qm_ac_tzp_pattern),
+                CallbackQueryHandler(cb_back_qm_ac_date,     pattern=f"^{CB_BACK_QM_AC_DATE}$"),
+                CallbackQueryHandler(cb_back_qm_menu,        pattern=f"^{CB_BACK_QM_MENU}$"),
             ],
             QM_CONFIRM_SLOT: [
-                CallbackQueryHandler(cb_qm_confirm_add, pattern=f"^{CB_QM_CONFIRM_ADD}$"),
-                CallbackQueryHandler(cb_back_qm_menu,   pattern=f"^{CB_BACK_QM_MENU}$"),
+                CallbackQueryHandler(cb_qm_confirm_add,      pattern=f"^{CB_QM_CONFIRM_ADD}$"),
+                CallbackQueryHandler(cb_back_qm_ac_tz,       pattern=f"^{CB_BACK_QM_AC_TZ}$"),
+                CallbackQueryHandler(cb_back_qm_menu,        pattern=f"^{CB_BACK_QM_MENU}$"),
             ],
         },
         fallbacks=[
