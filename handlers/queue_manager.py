@@ -50,7 +50,7 @@ from database import (
     COL_MEDIA_POOLS,
 )
 from handlers import chat_cleanup
-from handlers.base import CB_CANCEL, CB_MAIN_MENU, cmd_cancel, nav_keyboard, confirm_keyboard
+from handlers.base import CB_CANCEL, CB_MAIN_MENU, cmd_cancel, nav_keyboard, confirm_keyboard, main_menu_keyboard
 
 logger = logging.getLogger(__name__)
 
@@ -1865,8 +1865,13 @@ async def cb_cancel_local(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     _clear(context)
     _clear_mp(context)
     chat_id = query.message.chat_id
+    user_id = query.from_user.id if query.from_user else None
     await chat_cleanup.cleanup(context, chat_id, keep_message_id=query.message.message_id)
-    await query.edit_message_text("❌ *Cancelled.* Use /start to begin again.", parse_mode=ParseMode.MARKDOWN)
+    await query.edit_message_text(
+        "❌ *Cancelled.* Back to Main Menu.",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=main_menu_keyboard(bot=context.bot, user_id=user_id),
+    )
     return ConversationHandler.END
 
 
