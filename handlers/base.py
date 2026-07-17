@@ -9,9 +9,7 @@ Navigation pattern used throughout the bot:
 
 from __future__ import annotations
 
-import calendar as _cal
 import logging
-from datetime import date as _date
 from datetime import timezone as _dt_timezone
 from typing import Any
 
@@ -161,43 +159,6 @@ def confirm_keyboard(confirm_data: str, back_data: str) -> InlineKeyboardMarkup:
 # ---------------------------------------------------------------------------
 # Welcome / help text
 # ---------------------------------------------------------------------------
-
-# ---------------------------------------------------------------------------
-# Dynamic calendar widget
-# ---------------------------------------------------------------------------
-
-def _build_calendar() -> str:
-    """Return a monospace text calendar for the current month, today highlighted."""
-    today     = _date.today()
-    year      = today.year
-    month     = today.month
-    month_name = today.strftime("%B")
-
-    day_header = "Mo Tu We Th Fr Sa Su"   # 20 chars — defines column width
-    title      = f"<< {month_name} {year} >>"
-
-    weeks = _cal.monthcalendar(year, month)   # Monday-based; 0 = padding day
-
-    rows = []
-    for week in weeks:
-        cells = []
-        for day in week:
-            if day == 0:
-                cells.append("  ")
-            elif day == today.day:
-                cells.append(f"[{day:2d}]")   # e.g. "[17]" or "[ 7]"
-            else:
-                cells.append(f"{day:2d}")
-        rows.append(" ".join(cells))
-
-    lines = [title.center(len(day_header)), day_header] + rows
-    return "\n".join(lines)
-
-
-def _main_menu_text() -> str:
-    """Main Menu message: action label + live calendar block."""
-    return f"🏠 *Main Menu* — choose an action:\n\n```\n{_build_calendar()}\n```"
-
 
 WELCOME_TEXT = (
     "👋 *Welcome to the Advanced Scheduler Bot!*\n\n"
@@ -361,7 +322,7 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return MAIN_MENU
     user_id = update.effective_user.id if update.effective_user else None
     await update.message.reply_text(
-        _main_menu_text(),
+        "🏠 *Main Menu* — choose an action:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_menu_keyboard(context.bot, user_id),
     )
@@ -392,7 +353,7 @@ async def cb_main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     await query.answer()
     user_id = query.from_user.id if query.from_user else None
     await query.edit_message_text(
-        _main_menu_text(),
+        "🏠 *Main Menu* — choose an action:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=main_menu_keyboard(context.bot, user_id),
     )
