@@ -34,6 +34,7 @@ from handlers.base import build_base_conversation
 from handlers.owner_panel import build_owner_panel
 from handlers.queue_manager import build_media_pool, build_queue_manager
 from handlers.schedule_wizard import build_schedule_wizard
+from handlers.templates import build_templates_conversation
 from keep_alive import start_keep_alive
 from scheduler import setup_scheduler
 
@@ -41,7 +42,7 @@ logger = logging.getLogger(__name__)
 
 # Increment this string whenever a significant update is deployed.
 # Users can type /ping to confirm which version is running on Render.
-BOT_VERSION = "2026-07-10-v4 | /id ✅ | Owner Panel ✅ | Main Menu everywhere ✅"
+BOT_VERSION = "2026-07-17-v5 | Failure Alert ✅ | Post Stats ✅ | Clone Post ✅ | Templates ✅"
 
 # Module-level scheduler reference so post_shutdown can stop it
 _scheduler = None
@@ -260,6 +261,7 @@ def main() -> None:
     app.add_handler(build_queue_manager())
     app.add_handler(build_media_pool())
     app.add_handler(build_owner_panel())
+    app.add_handler(build_templates_conversation())
     app.add_handler(build_base_conversation())
 
     logger.info("Bot starting — polling for updates…")

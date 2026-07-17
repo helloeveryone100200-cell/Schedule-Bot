@@ -51,8 +51,14 @@ CB_MEDIA_POOL   = "action:media_pool"
 CB_MPP_PAGE    = "mpp:page:"     # + page number
 CB_MPP_PAUSE   = "mpp:pause:"   # + post_id
 CB_MPP_RESUME  = "mpp:resume:"  # + post_id
-CB_MPP_DEL     = "mpp:del:"     # + post_id  (ask confirm)
-CB_MPP_DEL_YES = "mpp:delyes:"  # + post_id  (execute)
+CB_MPP_DEL       = "mpp:del:"       # + post_id  (ask confirm)
+CB_MPP_DEL_YES   = "mpp:delyes:"   # + post_id  (execute)
+CB_MPP_CLONE     = "mpp:clone:"    # + post_id  (ask confirm)
+CB_MPP_CLONE_YES = "mpp:cloneyes:" # + post_id  (execute)
+CB_MPP_SAVE_TMPL = "mpp:savetmpl:" # + post_id  (save as template)
+
+CB_MY_STATS  = "action:my_stats"   # post statistics
+CB_TEMPLATES = "action:templates"  # templates menu
 
 # ---------------------------------------------------------------------------
 # Conversation states (used by the base ConversationHandler)
@@ -60,6 +66,8 @@ CB_MPP_DEL_YES = "mpp:delyes:"  # + post_id  (execute)
 MAIN_MENU               = 0
 MY_POSTS                = 1
 MY_POSTS_CONFIRM_DELETE = 2
+MY_POSTS_CONFIRM_CLONE  = 3
+MY_POSTS_SAVE_TEMPLATE  = 4
 
 POSTS_PER_PAGE = 5
 
@@ -103,6 +111,10 @@ def main_menu_keyboard(bot: Bot | None = None, user_id: int | None = None) -> In
         [
             InlineKeyboardButton("🗂 Manage Queue", callback_data=CB_MANAGE_QUEUE),
             InlineKeyboardButton("🎲 Media Pool",   callback_data=CB_MEDIA_POOL),
+        ],
+        [
+            InlineKeyboardButton("📝 Templates",  callback_data=CB_TEMPLATES),
+            InlineKeyboardButton("📊 My Stats",   callback_data=CB_MY_STATS),
         ],
         [
             InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL),
@@ -248,13 +260,19 @@ def _posts_keyboard(posts: list[dict], page: int) -> InlineKeyboardMarkup:
     for idx, post in enumerate(posts[start:end], start=start + 1):
         pid    = str(post["_id"])
         status = post.get("status", "?")
-        row: list[InlineKeyboardButton] = []
+        # Row 1: status controls + delete
+        ctrl: list[InlineKeyboardButton] = []
         if status == "pending":
-            row.append(InlineKeyboardButton(f"⏸ Pause #{idx}",  callback_data=f"{CB_MPP_PAUSE}{pid}"))
+            ctrl.append(InlineKeyboardButton(f"⏸ Pause #{idx}",  callback_data=f"{CB_MPP_PAUSE}{pid}"))
         elif status == "paused":
-            row.append(InlineKeyboardButton(f"▶️ Resume #{idx}", callback_data=f"{CB_MPP_RESUME}{pid}"))
-        row.append(InlineKeyboardButton(f"🗑 Delete #{idx}", callback_data=f"{CB_MPP_DEL}{pid}"))
-        buttons.append(row)
+            ctrl.append(InlineKeyboardButton(f"▶️ Resume #{idx}", callback_data=f"{CB_MPP_RESUME}{pid}"))
+        ctrl.append(InlineKeyboardButton(f"🗑 Delete #{idx}", callback_data=f"{CB_MPP_DEL}{pid}"))
+        buttons.append(ctrl)
+        # Row 2: utilities
+        buttons.append([
+            InlineKeyboardButton(f"🔁 Clone #{idx}",    callback_data=f"{CB_MPP_CLONE}{pid}"),
+            InlineKeyboardButton(f"💾 Template #{idx}", callback_data=f"{CB_MPP_SAVE_TMPL}{pid}"),
+        ])
 
     nav_row: list[InlineKeyboardButton] = []
     if page > 0:
@@ -264,7 +282,10 @@ def _posts_keyboard(posts: list[dict], page: int) -> InlineKeyboardMarkup:
     if nav_row:
         buttons.append(nav_row)
 
-    buttons.append([InlineKeyboardButton("🏠 Main Menu", callback_data=CB_MAIN_MENU)])
+    buttons.append([
+        InlineKeyboardButton("📊 Statistics",  callback_data=CB_MY_STATS),
+        InlineKeyboardButton("🏠 Main Menu",   callback_data=CB_MAIN_MENU),
+    ])
     return InlineKeyboardMarkup(buttons)
 
 
@@ -504,6 +525,193 @@ async def cb_mpp_del_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 # ---------------------------------------------------------------------------
+# Handlers — My Stats
+# ---------------------------------------------------------------------------
+
+async def cb_my_stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show per-channel post statistics for the current user."""
+    from database import get_post_stats
+    query = update.callback_query
+    if not query or not query.from_user:
+        return MY_POSTS
+    await query.answer()
+    user_id = query.from_user.id
+
+    try:
+        rows = await get_post_stats(user_id)
+    except Exception as exc:
+        logger.exception("get_post_stats failed: %s", exc)
+        await query.edit_message_text(
+            f"❌ Error loading statistics: `{str(exc).replace(chr(96), chr(39))}`",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data=CB_MAIN_MENU)]]),
+        )
+        return MY_POSTS
+
+    if not rows:
+        await query.edit_message_text(
+            "📊 *My Statistics*\n\nNo posts found. Schedule something first!",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=InlineKeyboardMarkup([
+                [InlineKeyboardButton("📋 My Posts", callback_data=CB_MY_POSTS)],
+                [InlineKeyboardButton("🏠 Main Menu", callback_data=CB_MAIN_MENU)],
+            ]),
+        )
+        return MY_POSTS
+
+    lines = ["📊 *Post Statistics*\n"]
+    for row in rows:
+        chat_id  = row["_id"]
+        total    = row["total"]
+        sm       = {s["status"]: s["count"] for s in row.get("stats", [])}
+        lines.append(
+            f"🗂 `{chat_id}` — *{total}* total\n"
+            f"  ⏳`{sm.get('pending', 0)}`  ✅`{sm.get('posted', 0)}`"
+            f"  ⏸`{sm.get('paused', 0)}`  ❌`{sm.get('failed', 0)}`"
+        )
+
+    await query.edit_message_text(
+        "\n".join(lines),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("📋 My Posts",  callback_data=CB_MY_POSTS)],
+            [InlineKeyboardButton("🏠 Main Menu", callback_data=CB_MAIN_MENU)],
+        ]),
+    )
+    return MY_POSTS
+
+
+# ---------------------------------------------------------------------------
+# Handlers — Clone Post
+# ---------------------------------------------------------------------------
+
+async def cb_mpp_clone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Ask for clone confirmation."""
+    from database import get_post
+    query = update.callback_query
+    if not query or not query.from_user:
+        return MY_POSTS
+    post_id = (query.data or "").replace(CB_MPP_CLONE, "")
+    try:
+        post = await get_post(post_id)
+    except Exception as exc:
+        await query.answer(f"Error: {exc}", show_alert=True)
+        return MY_POSTS
+    if not post:
+        await query.answer("Post not found.", show_alert=True)
+        return MY_POSTS
+    await query.answer()
+    chat_id  = post.get("chat_id", "?")
+    rec_type = (post.get("recurrence") or {}).get("type", "once")
+    await query.edit_message_text(
+        f"🔁 *Clone Post*\n\n"
+        f"🗂 Chat: `{chat_id}`\n"
+        f"🔄 Recurrence: `{rec_type}`\n\n"
+        "A copy will be created with the same content and recurrence settings.\n"
+        "It will be scheduled to run in *5 minutes* from now.\n\n"
+        "Confirm?",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("✅ Clone",  callback_data=f"{CB_MPP_CLONE_YES}{post_id}"),
+                InlineKeyboardButton("⬅️ Back",  callback_data=CB_MY_POSTS),
+            ],
+        ]),
+    )
+    return MY_POSTS_CONFIRM_CLONE
+
+
+async def cb_mpp_clone_yes(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Execute the clone and refresh the My Posts list."""
+    from database import clone_post
+    query = update.callback_query
+    if not query or not query.from_user:
+        return MY_POSTS
+    post_id = (query.data or "").replace(CB_MPP_CLONE_YES, "")
+    try:
+        new_id = await clone_post(post_id)
+    except Exception as exc:
+        logger.exception("Clone post %s failed: %s", post_id, exc)
+        await query.answer(f"Error: {exc}", show_alert=True)
+        return MY_POSTS
+    await query.answer(f"✅ Cloned! ID ends …{new_id[-6:]}")
+    user_id: int = query.from_user.id
+    page = context.user_data.get("_mp_page", 0)
+    return await _render_my_posts(query, user_id, page, context)
+
+
+# ---------------------------------------------------------------------------
+# Handlers — Save as Template
+# ---------------------------------------------------------------------------
+
+async def cb_mpp_save_tmpl(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Prompt user for a template name after tapping 💾 Template."""
+    from database import get_post
+    query = update.callback_query
+    if not query or not query.from_user:
+        return MY_POSTS
+    post_id = (query.data or "").replace(CB_MPP_SAVE_TMPL, "")
+    try:
+        post = await get_post(post_id)
+    except Exception as exc:
+        await query.answer(f"Error: {exc}", show_alert=True)
+        return MY_POSTS
+    if not post:
+        await query.answer("Post not found.", show_alert=True)
+        return MY_POSTS
+    await query.answer()
+    context.user_data["_save_tmpl_post_id"] = post_id
+    content = post.get("content") or {}
+    preview = content.get("text") or f"[{content.get('media_type', 'media')}]"
+    await query.edit_message_text(
+        f"💾 *Save as Template*\n\n"
+        f"Content preview: _{str(preview)[:80]}_\n\n"
+        "📝 Type a short name for this template (e.g. *Weekly Promo*):",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([
+            [InlineKeyboardButton("⬅️ Back", callback_data=CB_MY_POSTS)],
+        ]),
+    )
+    return MY_POSTS_SAVE_TEMPLATE
+
+
+async def recv_template_name(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Receive the template name from the user and save the template."""
+    from database import get_post, save_template
+    if not update.message or not update.effective_user:
+        return MY_POSTS_SAVE_TEMPLATE
+    name    = (update.message.text or "").strip()[:50]
+    if not name:
+        await update.message.reply_text("⚠️ Please enter a valid name.")
+        return MY_POSTS_SAVE_TEMPLATE
+    post_id = context.user_data.get("_save_tmpl_post_id")
+    user_id = update.effective_user.id
+    try:
+        post = await get_post(post_id)
+        if not post:
+            raise ValueError("Post not found")
+        content = post.get("content") or {}
+        tmpl_id = await save_template(user_id, name, content)
+    except Exception as exc:
+        logger.exception("save_template failed: %s", exc)
+        await update.message.reply_text(
+            f"❌ Error saving template: `{str(exc).replace(chr(96), chr(39))}`",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return MY_POSTS_SAVE_TEMPLATE
+    context.user_data.pop("_save_tmpl_post_id", None)
+    await update.message.reply_text(
+        f"✅ *Template saved!*\n\n"
+        f"📝 Name: *{name}*\n"
+        f"🆔 ID: `{tmpl_id}`\n\n"
+        "Access from *📝 Templates* in the Main Menu.",
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🏠 Main Menu", callback_data=CB_MAIN_MENU)]]),
+    )
+    return MY_POSTS
+
+
+# ---------------------------------------------------------------------------
 # ConversationHandler factory
 # ---------------------------------------------------------------------------
 
@@ -528,24 +736,38 @@ def build_base_conversation() -> ConversationHandler:
                 CallbackQueryHandler(cb_help,      pattern=f"^{CB_HELP}$"),
                 CallbackQueryHandler(cb_main_menu, pattern=f"^{CB_MAIN_MENU}$"),
                 CallbackQueryHandler(cb_cancel,    pattern=f"^{CB_CANCEL}$"),
-                # My Posts entry from main menu
                 CallbackQueryHandler(cb_my_posts,  pattern=f"^{CB_MY_POSTS}$"),
+                CallbackQueryHandler(cb_my_stats,  pattern=f"^{CB_MY_STATS}$"),
             ],
             MY_POSTS: [
-                CallbackQueryHandler(cb_my_posts,   pattern=f"^{CB_MY_POSTS}$"),
-                CallbackQueryHandler(cb_mpp_page,   pattern=rf"^{CB_MPP_PAGE}\d+$"),
-                CallbackQueryHandler(cb_mpp_pause,  pattern=rf"^{CB_MPP_PAUSE}{oid}$"),
-                CallbackQueryHandler(cb_mpp_resume, pattern=rf"^{CB_MPP_RESUME}{oid}$"),
-                CallbackQueryHandler(cb_mpp_del,    pattern=rf"^{CB_MPP_DEL}{oid}$"),
-                CallbackQueryHandler(cb_main_menu,  pattern=f"^{CB_MAIN_MENU}$"),
-                CallbackQueryHandler(cb_cancel,     pattern=f"^{CB_CANCEL}$"),
+                CallbackQueryHandler(cb_my_posts,       pattern=f"^{CB_MY_POSTS}$"),
+                CallbackQueryHandler(cb_mpp_page,       pattern=rf"^{CB_MPP_PAGE}\d+$"),
+                CallbackQueryHandler(cb_mpp_pause,      pattern=rf"^{CB_MPP_PAUSE}{oid}$"),
+                CallbackQueryHandler(cb_mpp_resume,     pattern=rf"^{CB_MPP_RESUME}{oid}$"),
+                CallbackQueryHandler(cb_mpp_del,        pattern=rf"^{CB_MPP_DEL}{oid}$"),
+                CallbackQueryHandler(cb_mpp_clone,      pattern=rf"^{CB_MPP_CLONE}{oid}$"),
+                CallbackQueryHandler(cb_mpp_save_tmpl,  pattern=rf"^{CB_MPP_SAVE_TMPL}{oid}$"),
+                CallbackQueryHandler(cb_my_stats,       pattern=f"^{CB_MY_STATS}$"),
+                CallbackQueryHandler(cb_main_menu,      pattern=f"^{CB_MAIN_MENU}$"),
+                CallbackQueryHandler(cb_cancel,         pattern=f"^{CB_CANCEL}$"),
             ],
             MY_POSTS_CONFIRM_DELETE: [
                 CallbackQueryHandler(cb_mpp_del_yes, pattern=rf"^{CB_MPP_DEL_YES}{oid}$"),
-                # Back → re-enter My Posts list
-                CallbackQueryHandler(cb_my_posts,   pattern=f"^{CB_MY_POSTS}$"),
-                CallbackQueryHandler(cb_main_menu,  pattern=f"^{CB_MAIN_MENU}$"),
-                CallbackQueryHandler(cb_cancel,     pattern=f"^{CB_CANCEL}$"),
+                CallbackQueryHandler(cb_my_posts,    pattern=f"^{CB_MY_POSTS}$"),
+                CallbackQueryHandler(cb_main_menu,   pattern=f"^{CB_MAIN_MENU}$"),
+                CallbackQueryHandler(cb_cancel,      pattern=f"^{CB_CANCEL}$"),
+            ],
+            MY_POSTS_CONFIRM_CLONE: [
+                CallbackQueryHandler(cb_mpp_clone_yes, pattern=rf"^{CB_MPP_CLONE_YES}{oid}$"),
+                CallbackQueryHandler(cb_my_posts,      pattern=f"^{CB_MY_POSTS}$"),
+                CallbackQueryHandler(cb_main_menu,     pattern=f"^{CB_MAIN_MENU}$"),
+                CallbackQueryHandler(cb_cancel,        pattern=f"^{CB_CANCEL}$"),
+            ],
+            MY_POSTS_SAVE_TEMPLATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, recv_template_name),
+                CallbackQueryHandler(cb_my_posts,  pattern=f"^{CB_MY_POSTS}$"),
+                CallbackQueryHandler(cb_main_menu, pattern=f"^{CB_MAIN_MENU}$"),
+                CallbackQueryHandler(cb_cancel,    pattern=f"^{CB_CANCEL}$"),
             ],
         },
         fallbacks=[

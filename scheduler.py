@@ -44,6 +44,31 @@ logger = logging.getLogger(__name__)
 
 SCHEDULER_INTERVAL_SECS = 60   # how often to poll for due posts
 
+
+# ---------------------------------------------------------------------------
+# Failure notification helper
+# ---------------------------------------------------------------------------
+
+async def _notify_failure(bot: Bot, post: dict[str, Any], reason: str) -> None:
+    """Send a DM to the post owner when a post permanently fails."""
+    user_id: int | None = post.get("user_id")
+    chat_id             = post.get("chat_id", "?")
+    post_id             = str(post.get("_id", "?"))
+    if not user_id:
+        return
+    try:
+        await bot.send_message(
+            user_id,
+            f"❌ *Post Failed*\n\n"
+            f"🗂 Chat: `{chat_id}`\n"
+            f"🆔 ID: `{post_id}`\n"
+            f"⚠️ Reason: _{reason}_\n\n"
+            "Go to *📋 My Posts* to manage or delete it.",
+            parse_mode="Markdown",
+        )
+    except Exception as exc:
+        logger.warning("Could not DM user %s about post failure: %s", user_id, exc)
+
 # ---------------------------------------------------------------------------
 # Time-window check
 # ---------------------------------------------------------------------------
@@ -341,8 +366,14 @@ async def _execute_pool_post(bot: Bot, post: dict[str, Any]) -> None:
 
     try:
         sent_msg = await _send_post(bot, ephemeral)
-    except (Forbidden, BadRequest):
+    except (Forbidden, BadRequest) as exc:
         await update_post_status(post_id, "failed")
+        reason = (
+            "Bot was removed or blocked from the chat."
+            if isinstance(exc, Forbidden)
+            else str(exc)
+        )
+        await _notify_failure(bot, post, reason)
         return
     except (NetworkError, TimedOut):
         return   # retry next tick
@@ -436,12 +467,14 @@ async def scheduler_tick(bot: Bot) -> None:
         except Forbidden:
             logger.error("Bot forbidden for post %s — marking failed.", post_id)
             await update_post_status(post_id, "failed")
+            await _notify_failure(bot, post, "Bot was removed or blocked from the chat.")
             continue
         except BadRequest as exc:
             err = str(exc).lower()
             if "not enough rights" in err or "chat not found" in err or "peer_id_invalid" in err:
                 logger.error("Permanent error for post %s (%s) — marking failed.", post_id, exc)
                 await update_post_status(post_id, "failed")
+                await _notify_failure(bot, post, str(exc))
             else:
                 logger.warning("BadRequest for post %s — will retry: %s", post_id, exc)
             continue

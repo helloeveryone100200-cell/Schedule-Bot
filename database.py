@@ -35,7 +35,8 @@ COL_QUEUE_SLOTS = "queue_slots"
 COL_MEDIA_POOLS = "media_pools"
 COL_USERS = "bot_users"
 COL_GROUPS = "bot_groups"
-COL_ACTIVITY = "chat_activity"
+COL_ACTIVITY  = "chat_activity"
+COL_TEMPLATES = "templates"
 
 # ---------------------------------------------------------------------------
 # Valid enum values (used in validation helpers)
@@ -449,6 +450,59 @@ async def delete_post(post_id: str) -> bool:
     return result.deleted_count > 0
 
 
+async def get_post_stats(user_id: int) -> list[dict[str, Any]]:
+    """
+    Per-channel post counts for a user, grouped by chat_id and status.
+    Each row: {"_id": chat_id, "total": N, "stats": [{"status": ..., "count": ...}, ...]}.
+    Sorted by total (descending).
+    """
+    db = await get_db()
+    pipeline = [
+        {"$match": {"user_id": user_id}},
+        {
+            "$group": {
+                "_id": {"chat_id": "$chat_id", "status": "$status"},
+                "count": {"$sum": 1},
+            }
+        },
+        {
+            "$group": {
+                "_id": "$_id.chat_id",
+                "stats": {"$push": {"status": "$_id.status", "count": "$count"}},
+                "total": {"$sum": "$count"},
+            }
+        },
+        {"$sort": {"total": -1}},
+    ]
+    cursor = db[COL_POSTS].aggregate(pipeline)
+    return await cursor.to_list(length=None)
+
+
+async def clone_post(post_id: str) -> str:
+    """
+    Duplicate a post, resetting status/run_count and scheduling it 5 minutes
+    from now. Returns the new post's string ID.
+    """
+    from bson import ObjectId
+    from datetime import timedelta
+    db       = await get_db()
+    original = await db[COL_POSTS].find_one({"_id": ObjectId(post_id)})
+    if not original:
+        raise ValueError(f"Post {post_id} not found")
+    now  = datetime.now(tz=timezone.utc)
+    copy = dict(original)
+    copy.pop("_id", None)
+    copy["status"]     = "pending"
+    copy["run_count"]  = 0
+    copy["created_at"] = now
+    copy["updated_at"] = now
+    rec = copy.get("recurrence")
+    if isinstance(rec, dict):
+        rec["next_run_at"] = now + timedelta(minutes=5)
+    result = await db[COL_POSTS].insert_one(copy)
+    return str(result.inserted_id)
+
+
 # ---------------------------------------------------------------------------
 # CRUD helpers — queue_slots
 # ---------------------------------------------------------------------------
@@ -749,6 +803,49 @@ async def get_best_hours(chat_id: int, top_n: int = 3) -> list[dict]:
         {"hour": 1, "count": 1},
     ).sort("count", -1).limit(top_n)
     return [{"hour": doc["hour"], "count": doc["count"]} async for doc in cursor]
+
+
+# ---------------------------------------------------------------------------
+# Post Templates
+# ---------------------------------------------------------------------------
+
+async def save_template(user_id: int, name: str, content: dict[str, Any]) -> str:
+    """Save a named post-content template. Returns the new template's string ID."""
+    db  = await get_db()
+    now = datetime.now(tz=timezone.utc)
+    doc = {
+        "user_id":    user_id,
+        "name":       name[:50],
+        "content":    content,
+        "created_at": now,
+    }
+    result = await db[COL_TEMPLATES].insert_one(doc)
+    return str(result.inserted_id)
+
+
+async def list_templates(user_id: int) -> list[dict[str, Any]]:
+    """Return all templates for this user, newest-first (max 50)."""
+    db = await get_db()
+    cursor = db[COL_TEMPLATES].find(
+        {"user_id": user_id},
+        {"name": 1, "content": 1, "created_at": 1},
+    ).sort("created_at", -1)
+    return await cursor.to_list(length=50)
+
+
+async def get_template(template_id: str) -> dict[str, Any] | None:
+    """Fetch a single template document by its string ObjectId."""
+    from bson import ObjectId
+    db = await get_db()
+    return await db[COL_TEMPLATES].find_one({"_id": ObjectId(template_id)})
+
+
+async def delete_template(template_id: str) -> bool:
+    """Delete a template. Returns True if a document was deleted."""
+    from bson import ObjectId
+    db     = await get_db()
+    result = await db[COL_TEMPLATES].delete_one({"_id": ObjectId(template_id)})
+    return result.deleted_count > 0
 
 
 async def clear_all_bot_data() -> dict[str, int]:
