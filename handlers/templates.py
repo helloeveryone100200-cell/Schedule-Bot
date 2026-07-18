@@ -19,7 +19,7 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from database import list_templates, delete_template
+from database import list_templates, delete_template, get_template
 from handlers.base import (
     CB_CANCEL, CB_MAIN_MENU, CB_TEMPLATES,
     cmd_cancel, main_menu_keyboard,
@@ -37,6 +37,7 @@ TMPL_CONFIRM_DEL = 201
 # Callback-data constants
 # ---------------------------------------------------------------------------
 CB_TMPL_PAGE    = "tmpl:page:"      # + page number
+CB_TMPL_VIEW    = "tmpl:view:"      # + template ObjectId
 CB_TMPL_DEL     = "tmpl:del:"       # + template ObjectId
 CB_TMPL_DEL_YES = "tmpl:delyes:"    # + template ObjectId
 
@@ -138,6 +139,61 @@ async def cb_tmpl_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 
 
 # ---------------------------------------------------------------------------
+# View / preview
+# ---------------------------------------------------------------------------
+
+async def cb_tmpl_view(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if not query or not query.from_user:
+        return TMPL_MENU
+    tid = (query.data or "").replace(CB_TMPL_VIEW, "")
+    await query.answer()
+
+    try:
+        tmpl = await get_template(tid)
+    except Exception as exc:
+        logger.exception("get_template failed: %s", exc)
+        await query.answer(f"Error: {exc}", show_alert=True)
+        return TMPL_MENU
+
+    if not tmpl:
+        await query.answer("Template not found.", show_alert=True)
+        return TMPL_MENU
+
+    content = tmpl.get("content", {})
+    name    = tmpl.get("name", "Unnamed")
+    text    = content.get("text") or ""
+    mtype   = content.get("media_type")
+    btns    = content.get("inline_keyboard")
+
+    preview_lines = [f"📄 *Template: {name}*\n"]
+    if mtype:
+        icons = {"photo": "🖼", "video": "🎬", "document": "📎",
+                 "audio": "🎵", "animation": "🎞", "voice": "🎤"}
+        preview_lines.append(f"{icons.get(mtype, '📁')} Media: `{mtype}`")
+    if text:
+        snippet = text[:300] + ("…" if len(text) > 300 else "")
+        preview_lines.append(f"\n📝 Text:\n{snippet}")
+    if btns:
+        btn_labels = [b["text"] for row in btns for b in row]
+        preview_lines.append(f"\n🔘 Buttons: {', '.join(btn_labels)}")
+
+    preview_lines.append(
+        "\n\n💡 To post with this template: *Schedule New Post → Step 2 → 📝 Use Template*"
+    )
+
+    await query.edit_message_text(
+        "\n".join(preview_lines),
+        parse_mode=ParseMode.MARKDOWN,
+        reply_markup=InlineKeyboardMarkup([[
+            InlineKeyboardButton("⬅️ Back", callback_data=CB_TEMPLATES),
+            InlineKeyboardButton("🗑 Delete", callback_data=f"{CB_TMPL_DEL}{tid}"),
+        ]]),
+    )
+    return TMPL_MENU
+
+
+# ---------------------------------------------------------------------------
 # Delete flow
 # ---------------------------------------------------------------------------
 
@@ -219,6 +275,7 @@ def build_templates_conversation() -> ConversationHandler:
             TMPL_MENU: [
                 CallbackQueryHandler(enter_templates, pattern=f"^{CB_TEMPLATES}$"),
                 CallbackQueryHandler(cb_tmpl_page,   pattern=rf"^{CB_TMPL_PAGE}\d+$"),
+                CallbackQueryHandler(cb_tmpl_view,   pattern=rf"^{CB_TMPL_VIEW}{oid}$"),
                 CallbackQueryHandler(cb_tmpl_del,    pattern=rf"^{CB_TMPL_DEL}{oid}$"),
                 CallbackQueryHandler(cb_tmpl_main_menu, pattern=f"^{CB_MAIN_MENU}$"),
             ],
