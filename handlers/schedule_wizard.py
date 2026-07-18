@@ -447,8 +447,7 @@ async def enter_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if groups:
         await query.answer()
         await query.edit_message_text(
-            f"▰▱▱▱▱▱▱▱▱ 1/9
-📅 *Schedule New Post — Step 1/9*\n\n"
+            f"▰▱▱▱▱▱▱▱▱ 1/9\n📅 *Schedule New Post — Step 1/9*\n\n"
             f"🗂 Choose the group or channel to post to:\n"
             f"_(Showing {min(_CHAT_PAGE_SIZE, len(groups))} of {len(groups)} known chats)_",
             parse_mode=ParseMode.MARKDOWN,
@@ -457,8 +456,7 @@ async def enter_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     else:
         await query.answer()
         await query.edit_message_text(
-            "▰▱▱▱▱▱▱▱▱ 1/9
-📅 *Schedule New Post — Step 1/9*\n\n"
+            "▰▱▱▱▱▱▱▱▱ 1/9\n📅 *Schedule New Post — Step 1/9*\n\n"
             "⚠️ *No groups or channels found.*\n\n"
             "The bot hasn't been added to any group or channel yet, "
             "or you haven't added the bot yourself.\n\n"
@@ -497,8 +495,7 @@ async def cb_chat_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     await query.answer()
     await query.edit_message_text(
         f"✅ Selected: *{title}* (`{chat_id}`)\n\n"
-        "▰▰▱▱▱▱▱▱▱ 2/9
-📝 *Step 2/9 — Post Content*\n\n"
+        "▰▰▱▱▱▱▱▱▱ 2/9\n📝 *Step 2/9 — Post Content*\n\n"
         "Send the content you want to post:\n"
         "• Plain text\n"
         "• Photo, video, document, or audio\n"
@@ -557,8 +554,7 @@ async def cb_chat_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     shown  = min(_CHAT_PAGE_SIZE, total - start)
     await query.answer()
     await query.edit_message_text(
-        f"▰▱▱▱▱▱▱▱▱ 1/9
-📅 *Schedule New Post — Step 1/9*\n\n"
+        f"▰▱▱▱▱▱▱▱▱ 1/9\n📅 *Schedule New Post — Step 1/9*\n\n"
         f"🗂 Choose the group or channel to post to:\n"
         f"_(Showing {shown} of {total} known chats)_",
         parse_mode=ParseMode.MARKDOWN,
@@ -572,8 +568,7 @@ async def cb_manual_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        "▰▱▱▱▱▱▱▱▱ 1/9
-📅 *Schedule New Post — Step 1/9*\n\n"
+        "▰▱▱▱▱▱▱▱▱ 1/9\n📅 *Schedule New Post — Step 1/9*\n\n"
         "✏️ Type the *Chat ID* of the target channel or group:\n\n"
         "💡 Forward any message from the chat to @userinfobot to find its ID.\n\n"
         "Example: `-1001234567890`",
@@ -602,8 +597,7 @@ async def recv_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     _w(context)["chat_id"] = chat_id
     await update.message.reply_text(
         f"✅ Chat ID saved: `{chat_id}`\n\n"
-        "▰▰▱▱▱▱▱▱▱ 2/9
-📝 *Step 2/9 — Post Content*\n\n"
+        "▰▰▱▱▱▱▱▱▱ 2/9\n📝 *Step 2/9 — Post Content*\n\n"
         "Now send the content you want to post. This can be:\n"
         "• Plain text\n"
         "• A photo, video, document, or audio\n"
@@ -701,8 +695,7 @@ async def cb_back_to_content(update: Update, context: ContextTypes.DEFAULT_TYPE)
     w       = _w(context)
     chat_id = w.get("chat_id", "?")
     await query.edit_message_text(
-        f"▰▰▱▱▱▱▱▱▱ 2/9
-📝 *Step 2/9 — Post Content*\n\n"
+        f"▰▰▱▱▱▱▱▱▱ 2/9\n📝 *Step 2/9 — Post Content*\n\n"
         "Send the content you want to post:\n"
         "• Plain text\n"
         "• Photo, video, document, or audio\n"
@@ -787,8 +780,7 @@ async def cb_ib_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     _w(context).setdefault("inline_buttons", [])
     await _edit(query,
-        "▰▰▰▱▱▱▱▱▱ 3/9
-🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
+        "▰▰▰▱▱▱▱▱▱ 3/9\n🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
         _recurrence_keyboard(),
     )
     return WIZARD_RECURRENCE
@@ -861,8 +853,7 @@ async def cb_ib_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Finished adding buttons — move to recurrence."""
     query = update.callback_query
     await _edit(query,
-        "▰▰▰▱▱▱▱▱▱ 3/9
-🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
+        "▰▰▰▱▱▱▱▱▱ 3/9\n🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
         _recurrence_keyboard(),
     )
     return WIZARD_RECURRENCE
@@ -885,8 +876,7 @@ async def cb_rec_once(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     _w(context)["recurrence_type"] = "once"
     query = update.callback_query
     await _edit(query,
-        "▰▰▰▰▱▱▱▱▱ 4/9
-🌍 *Step 4/9 — Timezone*\n\n"
+        "▰▰▰▰▱▱▱▱▱ 4/9\n🌍 *Step 4/9 — Timezone*\n\n"
         "Select your timezone so the post time is interpreted correctly:",
         _timezone_keyboard(0),
     )
@@ -962,8 +952,7 @@ async def cb_interval_unit(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     _w(context)["interval_unit"] = unit
     await _edit(query,
         f"✅ Interval: every `{_w(context)['interval_value']} {unit}`\n\n"
-        "▰▰▰▰▱▱▱▱▱ 4/9
-🌍 *Step 4/9 — Timezone*\n\n"
+        "▰▰▰▰▱▱▱▱▱ 4/9\n🌍 *Step 4/9 — Timezone*\n\n"
         "Select your timezone so the post time is interpreted correctly:",
         _timezone_keyboard(0),
     )
@@ -997,8 +986,7 @@ async def cb_dow_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return WIZARD_DOW_SELECT
     await _edit(query,
         f"✅ Days: `{', '.join(DOW_LABELS[d] for d in sorted(selected))}`\n\n"
-        "▰▰▰▰▱▱▱▱▱ 4/9
-🌍 *Step 4/9 — Timezone*\n\n"
+        "▰▰▰▰▱▱▱▱▱ 4/9\n🌍 *Step 4/9 — Timezone*\n\n"
         "Select your timezone so the post time is interpreted correctly:",
         _timezone_keyboard(0),
     )
@@ -1028,8 +1016,7 @@ async def recv_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     w.setdefault("time_window_enabled", False)
     await update.message.reply_text(
         f"✅ First run: `{text}` ({tz_str})\n\n"
-        "▰▰▰▰▰▰▱▱▱ 6/9
-🔢 *Step 6/9 — Max Runs*\n\n"
+        "▰▰▰▰▰▰▱▱▱ 6/9\n🔢 *Step 6/9 — Max Runs*\n\n"
         "How many times should this post be sent?\n\n"
         "Tap a preset or type a custom number:",
         parse_mode=ParseMode.MARKDOWN,
@@ -1046,8 +1033,7 @@ async def cb_back_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Called from Max Runs back button — return to First Run screen."""
     query = update.callback_query
     await _edit(query,
-        "▰▰▰▰▰▱▱▱▱ 5/9
-🕐 *Step 5/9 — First Run Time*\n\n"
+        "▰▰▰▰▰▱▱▱▱ 5/9\n🕐 *Step 5/9 — First Run Time*\n\n"
         "• `HH:MM` — today at this time\n"
         "• `DD/MM/YYYY HH:MM` — specific date\n\n"
         "Or tap *💡 Suggest Best Time* to see active hours for this chat.",
@@ -1142,8 +1128,7 @@ async def cb_smart_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await query.answer()
     await query.edit_message_text(
         f"✅ First run: `{time_str}` ({tz_str})\n\n"
-        "▰▰▰▰▰▰▱▱▱ 6/9
-🔢 *Step 6/9 — Max Runs*\n\n"
+        "▰▰▰▰▰▰▱▱▱ 6/9\n🔢 *Step 6/9 — Max Runs*\n\n"
         "How many times should this post be sent?\n\n"
         "Tap a preset or type a custom number:",
         parse_mode=ParseMode.MARKDOWN,
@@ -1178,8 +1163,7 @@ async def cb_timezone_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     await _edit(query,
         f"✅ Timezone: `{tz_name}`\n\n"
-        "▰▰▰▰▰▱▱▱▱ 5/9
-🕐 *Step 5/9 — First Run Time*\n\n"
+        "▰▰▰▰▰▱▱▱▱ 5/9\n🕐 *Step 5/9 — First Run Time*\n\n"
         "When should this post fire?\n\n"
         "Type the date/time:\n"
         "• `HH:MM` — today at this time (e.g. `14:30`)\n"
@@ -1198,8 +1182,7 @@ async def cb_back_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """Called from First Run back button — return to Timezone picker."""
     query = update.callback_query
     await _edit(query,
-        "▰▰▰▰▱▱▱▱▱ 4/9
-🌍 *Step 4/9 — Timezone*\n\nSelect your timezone:",
+        "▰▰▰▰▱▱▱▱▱ 4/9\n🌍 *Step 4/9 — Timezone*\n\nSelect your timezone:",
         _timezone_keyboard(0),
     )
     return WIZARD_TIMEZONE
@@ -1225,8 +1208,7 @@ async def cb_back_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return WIZARD_INTERVAL_UNIT
     else:
         await _edit(query,
-            "▰▰▰▱▱▱▱▱▱ 3/9
-🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
+            "▰▰▰▱▱▱▱▱▱ 3/9\n🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
             _recurrence_keyboard(),
         )
         return WIZARD_RECURRENCE
@@ -1272,8 +1254,7 @@ async def recv_max_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     label = "Unlimited" if val == 0 else str(val)
     await update.message.reply_text(
         f"✅ Max runs: *{label}*\n\n"
-        "▰▰▰▰▰▰▰▱▱ 7/9
-🕐 *Step 7/9 — Silent Hours (Time Window)*\n\n"
+        "▰▰▰▰▰▰▰▱▱ 7/9\n🕐 *Step 7/9 — Silent Hours (Time Window)*\n\n"
         "Enable a daily time window during which posts are allowed to fire?\n"
         "Posts outside this window will be *skipped*, not deleted.",
         parse_mode=ParseMode.MARKDOWN,
@@ -1299,8 +1280,7 @@ async def cb_mr_preset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     label = "Unlimited" if val == 0 else str(val)
     await _edit(query,
         f"✅ Max runs: *{label}*\n\n"
-        "▰▰▰▰▰▰▰▱▱ 7/9
-🕐 *Step 7/9 — Silent Hours (Time Window)*\n\n"
+        "▰▰▰▰▰▰▰▱▱ 7/9\n🕐 *Step 7/9 — Silent Hours (Time Window)*\n\n"
         "Enable a daily time window during which posts are allowed to fire?\n"
         "Posts outside this window will be *skipped*, not deleted.",
         _time_window_keyboard(False),
@@ -1339,8 +1319,7 @@ async def cb_tw_proceed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
         w["tw_start"] = None
         w["tw_end"]   = None
         await _edit(query,
-            "▰▰▰▰▰▰▰▰▱ 8/9
-⚙️ *Step 8/9 — Lifecycle Options*\n\n"
+            "▰▰▰▰▰▰▰▰▱ 8/9\n⚙️ *Step 8/9 — Lifecycle Options*\n\n"
             "Tap options to toggle them on/off, then tap *➡️ Next*:",
             _lifecycle_keyboard(
                 w.get("auto_delete", False),
@@ -1395,8 +1374,7 @@ async def recv_tw_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     w.setdefault("auto_pin",      False)
     await update.message.reply_text(
         f"✅ Window: `{start}` → `{parsed}`\n\n"
-        "▰▰▰▰▰▰▰▰▱ 8/9
-⚙️ *Step 8/9 — Lifecycle Options*\n\n"
+        "▰▰▰▰▰▰▰▰▱ 8/9\n⚙️ *Step 8/9 — Lifecycle Options*\n\n"
         "Tap options to toggle them on/off, then tap *➡️ Next*:",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=_lifecycle_keyboard(
@@ -1652,8 +1630,7 @@ async def cb_confirm_post(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def cb_back_recurrence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await _edit(query,
-        "▰▰▰▱▱▱▱▱▱ 3/9
-🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
+        "▰▰▰▱▱▱▱▱▱ 3/9\n🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
         _recurrence_keyboard(),
     )
     return WIZARD_RECURRENCE
@@ -1683,8 +1660,7 @@ async def cb_back_interval_unit(update: Update, context: ContextTypes.DEFAULT_TY
 async def cb_back_max_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await _edit(query,
-        "▰▰▰▰▰▰▱▱▱ 6/9
-🔢 *Step 6/9 — Max Runs*\n\n"
+        "▰▰▰▰▰▰▱▱▱ 6/9\n🔢 *Step 6/9 — Max Runs*\n\n"
         "How many times should this post be sent?\n\n"
         "Tap a preset or type a custom number:",
         _max_runs_keyboard(),
@@ -1696,8 +1672,7 @@ async def cb_back_tw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     w = _w(context)
     await _edit(query,
-        "▰▰▰▰▰▰▰▱▱ 7/9
-🕐 *Step 7/9 — Silent Hours (Time Window)*\n\n"
+        "▰▰▰▰▰▰▰▱▱ 7/9\n🕐 *Step 7/9 — Silent Hours (Time Window)*\n\n"
         "Enable a daily window during which posts are allowed to fire?",
         _time_window_keyboard(w.get("time_window_enabled", False)),
     )
@@ -1718,8 +1693,7 @@ async def cb_back_lifecycle(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     w = _w(context)
     await _edit(query,
-        "▰▰▰▰▰▰▰▰▱ 8/9
-⚙️ *Step 8/9 — Lifecycle Options*\n\n"
+        "▰▰▰▰▰▰▰▰▱ 8/9\n⚙️ *Step 8/9 — Lifecycle Options*\n\n"
         "Tap options to toggle them on/off, then tap *➡️ Next*:",
         _lifecycle_keyboard(w.get("auto_delete", False), w.get("self_destruct", False), w.get("auto_pin", False)),
     )
