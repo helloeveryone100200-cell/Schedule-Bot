@@ -126,6 +126,7 @@ CB_BACK_TW_START    = "back:tw_start"
 CB_BACK_LIFECYCLE   = "back:lifecycle"
 CB_BACK_CONTENT     = "back:content"
 CB_BACK_TZ          = "back:tz"         # from timezone screen → smart-routes to rec/interval/DOW
+CB_MR_PRESET        = "mr:preset:"     # + str(value) — quick-tap max-runs preset (0 = unlimited)
 
 # Smart scheduling
 CB_SMART_SUGGEST    = "smart:suggest"
@@ -1016,11 +1017,10 @@ async def recv_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await update.message.reply_text(
         f"✅ First run: `{text}` ({tz_str})\n\n"
         "🔢 *Step 6/9 — Max Runs*\n\n"
-        "How many times should this post be sent?\n"
-        "• Type a number (e.g. `10`) to limit runs\n"
-        "• Type `0` for *unlimited* (runs forever)",
+        "How many times should this post be sent?\n\n"
+        "Tap a preset or type a custom number:",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=nav_keyboard(back_data=CB_BACK_FIRST_RUN),
+        reply_markup=_max_runs_keyboard(),
     )
     return WIZARD_MAX_RUNS
 
@@ -1129,11 +1129,10 @@ async def cb_smart_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await query.edit_message_text(
         f"✅ First run: `{time_str}` ({tz_str})\n\n"
         "🔢 *Step 6/9 — Max Runs*\n\n"
-        "How many times should this post be sent?\n"
-        "• Type a number (e.g. `10`) to limit runs\n"
-        "• Type `0` for *unlimited* (runs forever)",
+        "How many times should this post be sent?\n\n"
+        "Tap a preset or type a custom number:",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=nav_keyboard(back_data=CB_BACK_FIRST_RUN),
+        reply_markup=_max_runs_keyboard(),
     )
     return WIZARD_MAX_RUNS
 
@@ -1219,30 +1218,72 @@ async def cb_back_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # Step 6 — Max runs
 # ---------------------------------------------------------------------------
 
+def _max_runs_keyboard() -> InlineKeyboardMarkup:
+    """Quick-tap presets + text-input fallback for max runs."""
+    return InlineKeyboardMarkup([
+        [
+            InlineKeyboardButton("5×",           callback_data=f"{CB_MR_PRESET}5"),
+            InlineKeyboardButton("10×",          callback_data=f"{CB_MR_PRESET}10"),
+            InlineKeyboardButton("30×",          callback_data=f"{CB_MR_PRESET}30"),
+            InlineKeyboardButton("∞ Unlimited",  callback_data=f"{CB_MR_PRESET}0"),
+        ],
+        [
+            InlineKeyboardButton("⬅️ Back",   callback_data=CB_BACK_FIRST_RUN),
+            InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL),
+        ],
+    ])
+
+
 async def recv_max_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Accept a typed custom max-runs number."""
     text = (update.message.text or "").strip()
     if not text.isdigit():
         await update.message.reply_text(
-            "⚠️ Please enter a whole number ≥ 0.  Type `0` for unlimited.",
+            "⚠️ Please enter a whole number ≥ 0, or tap a preset above.\n"
+            "Type `0` for unlimited.",
             parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_max_runs_keyboard(),
         )
         return WIZARD_MAX_RUNS
 
     val = int(text)
     w = _w(context)
     w["max_runs"] = None if val == 0 else val
-    # Use setdefault so back-navigation doesn't clobber a time-window choice
-    # the user already made.  Only initialise if the key is absent.
     w.setdefault("time_window_enabled", False)
 
-    label = "unlimited" if val == 0 else str(val)
+    label = "Unlimited" if val == 0 else str(val)
     await update.message.reply_text(
-        f"✅ Max runs: `{label}`\n\n"
+        f"✅ Max runs: *{label}*\n\n"
         "🕐 *Step 7/9 — Silent Hours (Time Window)*\n\n"
         "Enable a daily time window during which posts are allowed to fire?\n"
         "Posts outside this window will be *skipped*, not deleted.",
         parse_mode=ParseMode.MARKDOWN,
         reply_markup=_time_window_keyboard(False),
+    )
+    return WIZARD_TIME_WINDOW
+
+
+async def cb_mr_preset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle quick-tap max-runs preset buttons (5, 10, 30, or unlimited)."""
+    query = update.callback_query
+    raw = (query.data or "").replace(CB_MR_PRESET, "", 1)
+    try:
+        val = int(raw)
+    except ValueError:
+        await query.answer("Invalid preset.", show_alert=True)
+        return WIZARD_MAX_RUNS
+
+    w = _w(context)
+    w["max_runs"] = None if val == 0 else val
+    w.setdefault("time_window_enabled", False)
+
+    label = "Unlimited" if val == 0 else str(val)
+    await _edit(query,
+        f"✅ Max runs: *{label}*\n\n"
+        "🕐 *Step 7/9 — Silent Hours (Time Window)*\n\n"
+        "Enable a daily time window during which posts are allowed to fire?\n"
+        "Posts outside this window will be *skipped*, not deleted.",
+        _time_window_keyboard(False),
     )
     return WIZARD_TIME_WINDOW
 
@@ -1620,8 +1661,9 @@ async def cb_back_max_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     query = update.callback_query
     await _edit(query,
         "🔢 *Step 6/9 — Max Runs*\n\n"
-        "Type a number to limit runs, or `0` for unlimited:",
-        nav_keyboard(back_data=CB_BACK_FIRST_RUN),
+        "How many times should this post be sent?\n\n"
+        "Tap a preset or type a custom number:",
+        _max_runs_keyboard(),
     )
     return WIZARD_MAX_RUNS
 
@@ -1751,6 +1793,8 @@ def build_schedule_wizard() -> ConversationHandler:
             ],
             WIZARD_MAX_RUNS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_max_runs),
+                # Quick-tap preset buttons (5, 10, 30, unlimited)
+                CallbackQueryHandler(cb_mr_preset,      pattern=rf"^{re.escape(CB_MR_PRESET)}\d+$"),
                 # Back from Max Runs → First Run (first run is now step 5)
                 CallbackQueryHandler(cb_back_first_run, pattern=f"^{CB_BACK_FIRST_RUN}$"),
             ],
