@@ -715,6 +715,20 @@ async def cb_back_qm_slot_tz(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 # ── Add Content to Queue ──
 
+async def _has_slots(user_id: int, chat_id: int) -> bool:
+    """Return True only when a slot document with ≥1 slot already exists."""
+    doc = await get_queue(user_id, chat_id)
+    return bool(doc and doc.get("slots"))
+
+
+def _no_slots_warning_keyboard() -> InlineKeyboardMarkup:
+    """Keyboard shown when the chosen chat has no time slots configured."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("⏰ Set Daily Slots Now", callback_data=CB_QM_SET_SLOTS)],
+        [InlineKeyboardButton("⬅️ Back to Menu",        callback_data=CB_BACK_QM_MENU)],
+    ])
+
+
 async def cb_qm_add_content(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Entry to Add Content wizard — show group picker."""
     query = update.callback_query
@@ -765,6 +779,18 @@ async def cb_qm_ac_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     _w(context)["add_chat_id"]    = chat_id
     _w(context)["add_chat_title"] = title
+
+    # Guard: require slots to be set before allowing content to be queued
+    if not await _has_slots(user_id, chat_id):
+        await _edit(query,
+            f"⚠️ *No Time Slots Set — {title}*\n\n"
+            "Queue posting needs daily time slots configured first.\n\n"
+            "Set them up in this order:\n"
+            "① ⏰ *Set Daily Slots* ← do this first\n"
+            "② ➕ *Add Content*     ← then add your posts",
+            _no_slots_warning_keyboard(),
+        )
+        return QM_ADD_CHAT_ID
 
     await _edit(query,
         f"✅ Selected: *{title}* (`{chat_id}`)\n\n"
@@ -823,6 +849,21 @@ async def recv_qm_add_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     _w(context)["add_chat_id"]    = chat_id
     _w(context)["add_chat_title"] = str(chat_id)
+
+    # Guard: require slots to be set before allowing content to be queued
+    user_id = update.message.from_user.id
+    if not await _has_slots(user_id, chat_id):
+        await update.message.reply_text(
+            f"⚠️ *No Time Slots Set — Chat `{chat_id}`*\n\n"
+            "Queue posting needs daily time slots configured first.\n\n"
+            "Set them up in this order:\n"
+            "① ⏰ *Set Daily Slots* ← do this first\n"
+            "② ➕ *Add Content*     ← then add your posts",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=_no_slots_warning_keyboard(),
+        )
+        return QM_ADD_CHAT_ID
+
     await update.message.reply_text(
         f"✅ Chat: `{chat_id}`\n\n"
         "➕ *Add Content — Step 2 of 4*\n\n"
@@ -1931,6 +1972,8 @@ def build_queue_manager() -> ConversationHandler:
                 CallbackQueryHandler(cb_qm_ac_manual,     pattern=f"^{CB_QM_AC_MANUAL}$"),
                 # Manual text entry
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_qm_add_chat_id),
+                # No-slots warning buttons: "Set Daily Slots Now" and "Back to Menu"
+                CallbackQueryHandler(cb_qm_set_slots,     pattern=f"^{CB_QM_SET_SLOTS}$"),
                 CallbackQueryHandler(cb_back_qm_menu,     pattern=f"^{CB_BACK_QM_MENU}$"),
             ],
             QM_ADD_CONTENT: [
