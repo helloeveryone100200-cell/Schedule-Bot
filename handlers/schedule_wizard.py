@@ -1549,7 +1549,7 @@ def _build_summary(w: dict[str, Any]) -> str:
     first_run = w.get("first_run_raw", "—")
 
     return (
-        "📋 *Post Summary — Please Review*\n\n"
+        "▰▰▰▰▰▰▰▰▰ 9/9\n📋 *Post Summary — Please Review*\n\n"
         f"🗂 *Chat:* {w.get('chat_title') or ''} `{w.get('chat_id')}`\n"
         f"📝 *Content:* `{content_preview or '—'}`\n"
         f"🔁 *Recurrence:* {rec_line}\n"
