@@ -125,6 +125,7 @@ CB_BACK_TW          = "back:tw"
 CB_BACK_TW_START    = "back:tw_start"
 CB_BACK_LIFECYCLE   = "back:lifecycle"
 CB_BACK_CONTENT     = "back:content"
+CB_BACK_TZ          = "back:tz"         # from timezone screen → smart-routes to rec/interval/DOW
 
 # Smart scheduling
 CB_SMART_SUGGEST    = "smart:suggest"
@@ -307,7 +308,7 @@ def _timezone_keyboard(page: int = 0) -> InlineKeyboardMarkup:
     if nav:
         rows.append(nav)
     rows.append([
-        InlineKeyboardButton("⬅️ Back",   callback_data=CB_BACK_FIRST_RUN),
+        InlineKeyboardButton("⬅️ Back",   callback_data=CB_BACK_TZ),
         InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL),
     ])
     return InlineKeyboardMarkup(rows)
@@ -874,15 +875,11 @@ async def cb_rec_once(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     _w(context)["recurrence_type"] = "once"
     query = update.callback_query
     await _edit(query,
-        "🕐 *Step 4/9 — First Run Time*\n\n"
-        "When should this post be sent?\n\n"
-        "Type the date/time in one of these formats:\n"
-        "• `HH:MM` — today at this time (e.g. `14:30`)\n"
-        "• `DD/MM/YYYY HH:MM` — specific date (e.g. `25/12/2025 09:00`)\n\n"
-        "Or tap *💡 Suggest Best Time* to see active hours for this chat.",
-        _first_run_keyboard(CB_BACK_RECURRENCE),
+        "🌍 *Step 4/9 — Timezone*\n\n"
+        "Select your timezone so the post time is interpreted correctly:",
+        _timezone_keyboard(0),
     )
-    return WIZARD_FIRST_RUN
+    return WIZARD_TIMEZONE
 
 
 async def cb_rec_interval(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -954,14 +951,11 @@ async def cb_interval_unit(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     _w(context)["interval_unit"] = unit
     await _edit(query,
         f"✅ Interval: every `{_w(context)['interval_value']} {unit}`\n\n"
-        "🕐 *Step 4/9 — First Run Time*\n\n"
-        "When should the *first* post fire?\n"
-        "• `HH:MM` — today at this time\n"
-        "• `DD/MM/YYYY HH:MM` — specific date\n\n"
-        "Or tap *💡 Suggest Best Time* to see active hours for this chat.",
-        _first_run_keyboard(CB_BACK_INTERVAL_U),
+        "🌍 *Step 4/9 — Timezone*\n\n"
+        "Select your timezone so the post time is interpreted correctly:",
+        _timezone_keyboard(0),
     )
-    return WIZARD_FIRST_RUN
+    return WIZARD_TIMEZONE
 
 
 # ---------------------------------------------------------------------------
@@ -991,14 +985,11 @@ async def cb_dow_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return WIZARD_DOW_SELECT
     await _edit(query,
         f"✅ Days: `{', '.join(DOW_LABELS[d] for d in sorted(selected))}`\n\n"
-        "🕐 *Step 4/9 — First Run Time*\n\n"
-        "When should the *first* post fire?\n"
-        "• `HH:MM` — today at this time\n"
-        "• `DD/MM/YYYY HH:MM` — specific date\n\n"
-        "Or tap *💡 Suggest Best Time* to see active hours for this chat.",
-        _first_run_keyboard(CB_BACK_DOW),
+        "🌍 *Step 4/9 — Timezone*\n\n"
+        "Select your timezone so the post time is interpreted correctly:",
+        _timezone_keyboard(0),
     )
-    return WIZARD_FIRST_RUN
+    return WIZARD_TIMEZONE
 
 
 # ---------------------------------------------------------------------------
@@ -1007,7 +998,7 @@ async def cb_dow_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 
 async def recv_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     w = _w(context)
-    tz_str = w.get("timezone", "UTC")
+    tz_str = w.get("timezone", "UTC")   # timezone is always set before this step now
     text = (update.message.text or "").strip()
 
     dt = _parse_run_time(text, tz_str)
@@ -1021,14 +1012,17 @@ async def recv_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     w["first_run"] = dt
     w["first_run_raw"] = text
+    w.setdefault("time_window_enabled", False)
     await update.message.reply_text(
-        f"✅ First run: `{text}`\n\n"
-        "🌍 *Step 5/9 — Timezone*\n\n"
-        "Select your timezone so times are interpreted correctly:",
+        f"✅ First run: `{text}` ({tz_str})\n\n"
+        "🔢 *Step 6/9 — Max Runs*\n\n"
+        "How many times should this post be sent?\n"
+        "• Type a number (e.g. `10`) to limit runs\n"
+        "• Type `0` for *unlimited* (runs forever)",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_timezone_keyboard(0),
+        reply_markup=nav_keyboard(back_data=CB_BACK_FIRST_RUN),
     )
-    return WIZARD_TIMEZONE
+    return WIZARD_MAX_RUNS
 
 
 # ---------------------------------------------------------------------------
@@ -1036,23 +1030,14 @@ async def recv_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 # ---------------------------------------------------------------------------
 
 async def cb_back_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Called from Max Runs back button — return to First Run screen."""
     query = update.callback_query
-    w = _w(context)
-    rec_type = w.get("recurrence_type", "once")
-    if rec_type == "days_of_week":
-        back = CB_BACK_DOW
-    elif rec_type == "interval":
-        back = CB_BACK_INTERVAL_U
-    else:
-        # "once" — go back to the recurrence-type selector, not the interval-unit
-        # screen (CB_BACK_INTERVAL_U would show an irrelevant keyboard).
-        back = CB_BACK_RECURRENCE
     await _edit(query,
-        "🕐 *Step 4/9 — First Run Time*\n\n"
+        "🕐 *Step 5/9 — First Run Time*\n\n"
         "• `HH:MM` — today at this time\n"
         "• `DD/MM/YYYY HH:MM` — specific date\n\n"
         "Or tap *💡 Suggest Best Time* to see active hours for this chat.",
-        _first_run_keyboard(back),
+        _first_run_keyboard(CB_BACK_TIMEZONE),
     )
     return WIZARD_FIRST_RUN
 
@@ -1137,16 +1122,20 @@ async def cb_smart_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
 
     w["first_run"] = dt
     w["first_run_raw"] = time_str
+    w.setdefault("time_window_enabled", False)
 
+    tz_str = w.get("timezone", "UTC")
     await query.answer()
     await query.edit_message_text(
-        f"✅ First run: `{time_str}`\n\n"
-        "🌍 *Step 5/9 — Timezone*\n\n"
-        "Select your timezone so the time is interpreted correctly:",
+        f"✅ First run: `{time_str}` ({tz_str})\n\n"
+        "🔢 *Step 6/9 — Max Runs*\n\n"
+        "How many times should this post be sent?\n"
+        "• Type a number (e.g. `10`) to limit runs\n"
+        "• Type `0` for *unlimited* (runs forever)",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_timezone_keyboard(0),
+        reply_markup=nav_keyboard(back_data=CB_BACK_FIRST_RUN),
     )
-    return WIZARD_TIMEZONE
+    return WIZARD_MAX_RUNS
 
 
 # ---------------------------------------------------------------------------
@@ -1173,21 +1162,17 @@ async def cb_timezone_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     w = _w(context)
     w["timezone"] = tz_name
 
-    # Re-parse first_run with the now-known timezone
-    raw = w.get("first_run_raw", "")
-    dt = _parse_run_time(raw, tz_name)
-    if dt:
-        w["first_run"] = dt
-
     await _edit(query,
         f"✅ Timezone: `{tz_name}`\n\n"
-        "🔁 *Step 6/9 — Max Runs*\n\n"
-        "How many times should this post be sent?\n"
-        "• Type a number (e.g. `10`) to limit runs\n"
-        "• Type `0` for *unlimited* (runs forever)",
-        nav_keyboard(back_data=CB_BACK_TIMEZONE),
+        "🕐 *Step 5/9 — First Run Time*\n\n"
+        "When should this post fire?\n\n"
+        "Type the date/time:\n"
+        "• `HH:MM` — today at this time (e.g. `14:30`)\n"
+        "• `DD/MM/YYYY HH:MM` — specific date (e.g. `25/12/2025 09:00`)\n\n"
+        "Or tap *💡 Suggest Best Time* to see active hours for this chat.",
+        _first_run_keyboard(CB_BACK_TIMEZONE),
     )
-    return WIZARD_MAX_RUNS
+    return WIZARD_FIRST_RUN
 
 
 # ---------------------------------------------------------------------------
@@ -1195,12 +1180,39 @@ async def cb_timezone_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 # ---------------------------------------------------------------------------
 
 async def cb_back_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Called from First Run back button — return to Timezone picker."""
     query = update.callback_query
     await _edit(query,
-        "🌍 *Step 5/9 — Timezone*\n\nSelect your timezone:",
+        "🌍 *Step 4/9 — Timezone*\n\nSelect your timezone:",
         _timezone_keyboard(0),
     )
     return WIZARD_TIMEZONE
+
+
+async def cb_back_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Called from Timezone back button — smart-routes to recurrence/interval-unit/DOW."""
+    query = update.callback_query
+    w = _w(context)
+    rec_type = w.get("recurrence_type", "once")
+    if rec_type == "days_of_week":
+        await _edit(query,
+            "📆 *Step 3a — Days of Week*\n\nTap days to toggle, then ➡️ Next.",
+            _dow_keyboard(w.get("days_of_week", set())),
+        )
+        return WIZARD_DOW_SELECT
+    elif rec_type == "interval":
+        await _edit(query,
+            f"✅ Value: `{w.get('interval_value')}`\n\n"
+            "⏱ *Step 3b — Interval Unit*\n\nChoose the time unit:",
+            _interval_unit_keyboard(),
+        )
+        return WIZARD_INTERVAL_UNIT
+    else:
+        await _edit(query,
+            "🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
+            _recurrence_keyboard(),
+        )
+        return WIZARD_RECURRENCE
 
 
 # ---------------------------------------------------------------------------
@@ -1609,7 +1621,7 @@ async def cb_back_max_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     await _edit(query,
         "🔢 *Step 6/9 — Max Runs*\n\n"
         "Type a number to limit runs, or `0` for unlimited:",
-        nav_keyboard(back_data=CB_BACK_TIMEZONE),
+        nav_keyboard(back_data=CB_BACK_FIRST_RUN),
     )
     return WIZARD_MAX_RUNS
 
@@ -1724,22 +1736,23 @@ def build_schedule_wizard() -> ConversationHandler:
             ],
             WIZARD_FIRST_RUN: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_first_run),
-                CallbackQueryHandler(cb_smart_suggest,      pattern=f"^{CB_SMART_SUGGEST}$"),
-                CallbackQueryHandler(cb_smart_pick,         pattern=r"^smart:pick:\d{2}:\d{2}$"),
-                CallbackQueryHandler(cb_back_first_run,     pattern=f"^{CB_BACK_FIRST_RUN}$"),
-                CallbackQueryHandler(cb_back_dow,           pattern=f"^{CB_BACK_DOW}$"),
-                CallbackQueryHandler(cb_back_interval_unit, pattern=f"^{CB_BACK_INTERVAL_U}$"),
-                # "once" recurrence sends CB_BACK_RECURRENCE from first-run screen
-                CallbackQueryHandler(cb_back_recurrence,    pattern=f"^{CB_BACK_RECURRENCE}$"),
+                CallbackQueryHandler(cb_smart_suggest,  pattern=f"^{CB_SMART_SUGGEST}$"),
+                CallbackQueryHandler(cb_smart_pick,     pattern=r"^smart:pick:\d{2}:\d{2}$"),
+                # Smart-suggest sub-screen "Enter custom time" / "Back" → re-show first run
+                CallbackQueryHandler(cb_back_first_run, pattern=f"^{CB_BACK_FIRST_RUN}$"),
+                # Back from First Run → Timezone (timezone is now step 4, first run is step 5)
+                CallbackQueryHandler(cb_back_timezone,  pattern=f"^{CB_BACK_TIMEZONE}$"),
             ],
             WIZARD_TIMEZONE: [
-                CallbackQueryHandler(cb_timezone_pick,  pattern=tz_pattern),
-                CallbackQueryHandler(cb_timezone_page,  pattern=tzp_pattern),
-                CallbackQueryHandler(cb_back_first_run, pattern=f"^{CB_BACK_FIRST_RUN}$"),
+                CallbackQueryHandler(cb_timezone_pick, pattern=tz_pattern),
+                CallbackQueryHandler(cb_timezone_page, pattern=tzp_pattern),
+                # Back from Timezone → smart-routes to recurrence/interval-unit/DOW
+                CallbackQueryHandler(cb_back_tz,       pattern=f"^{CB_BACK_TZ}$"),
             ],
             WIZARD_MAX_RUNS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_max_runs),
-                CallbackQueryHandler(cb_back_timezone, pattern=f"^{CB_BACK_TIMEZONE}$"),
+                # Back from Max Runs → First Run (first run is now step 5)
+                CallbackQueryHandler(cb_back_first_run, pattern=f"^{CB_BACK_FIRST_RUN}$"),
             ],
             WIZARD_TIME_WINDOW: [
                 CallbackQueryHandler(cb_tw_toggle,  pattern=f"^({CB_TW_ON}|{CB_TW_OFF})$"),
