@@ -1299,11 +1299,15 @@ async def cb_back_qm_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 
 def _mp_menu_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("➕ Add Item to Pool",       callback_data=CB_MP_ADD_ITEM)],
-        [InlineKeyboardButton("⚙️ Set Posting Schedule",  callback_data=CB_MP_SET_INTERVAL)],
-        [InlineKeyboardButton("👁 View Pool Stats",       callback_data=CB_MP_VIEW)],
-        [InlineKeyboardButton("🔄 Reset Pool",            callback_data=CB_MP_RESET)],
-        [InlineKeyboardButton("🗑 Clear Pool",            callback_data=CB_MP_CLEAR)],
+        # ── Phase 1: Build your pool ──────────────────────────────
+        [InlineKeyboardButton("➕ Add Items to Pool",          callback_data=CB_MP_ADD_ITEM)],
+        [
+            InlineKeyboardButton("👁 View Stats",             callback_data=CB_MP_VIEW),
+            InlineKeyboardButton("🔄 Reset Pool",             callback_data=CB_MP_RESET),
+            InlineKeyboardButton("🗑 Clear All",              callback_data=CB_MP_CLEAR),
+        ],
+        # ── Phase 2: Start posting ─────────────────────────────────
+        [InlineKeyboardButton("▶️ Configure & Start Posting", callback_data=CB_MP_SET_INTERVAL)],
         [
             InlineKeyboardButton("🏠 Main Menu", callback_data=CB_MAIN_MENU),
             InlineKeyboardButton("❌ Cancel",    callback_data=CB_CANCEL),
@@ -1318,13 +1322,12 @@ async def enter_media_pool(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     chat_cleanup.track(context.application.bot_data, query.message.chat_id, query.message.message_id)
     await _edit(query,
         "🎲 *Media Pool — Random Shuffler*\n\n"
-        "Upload multiple items to a pool. At each scheduled interval the bot picks "
-        "one un-posted item at random.\n\n"
-        "📌 *How it works:*\n"
-        "1. Add items to the pool (text, photos, videos, etc.)\n"
-        "2. Set a posting interval (every X hours, etc.)\n"
-        "3. The bot posts a random un-posted item each time\n"
-        "4. When all items are posted the pool resets automatically",
+        "Upload content once, and the bot randomly posts from the pool on a schedule "
+        "— resetting automatically when all items have been sent.\n\n"
+        "📥 *Step 1 — Build Your Pool*\n"
+        "Add items (text, photos, videos, etc.), view stats, reset or clear.\n\n"
+        "▶️ *Step 2 — Start Posting*\n"
+        "Set the chat, posting interval, and timezone — then go live.",
         _mp_menu_keyboard(),
     )
     return MP_MENU
