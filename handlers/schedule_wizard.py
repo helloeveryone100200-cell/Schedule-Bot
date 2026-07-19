@@ -325,11 +325,6 @@ def _time_window_keyboard(enabled: bool) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("⬅️ Back",    callback_data=CB_BACK_MAX_RUNS),
-            # Always use CB_LC_NEXT for "Next" regardless of enabled state.
-            # cb_tw_proceed reads w["time_window_enabled"] and routes correctly:
-            # True → WIZARD_TW_START, False → WIZARD_LIFECYCLE.
-            # Previously this sent CB_TW_ON when enabled=True, which re-triggered
-            # the toggle handler instead of proceeding — leaving users stuck.
             InlineKeyboardButton("➡️ Next",    callback_data=CB_LC_NEXT),
             InlineKeyboardButton("❌ Cancel",  callback_data=CB_CANCEL),
         ],
@@ -345,6 +340,27 @@ def _lifecycle_keyboard(ad: bool, sd: bool, ap: bool) -> InlineKeyboardMarkup:
         [InlineKeyboardButton(f"{_flag(ap)} Auto-Pin (+ unpin after X hrs)", callback_data=CB_LC_AP)],
         [
             InlineKeyboardButton("⬅️ Back",   callback_data=CB_BACK_TW),
+            InlineKeyboardButton("➡️ Next",   callback_data=CB_LC_NEXT),
+            InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL),
+        ],
+    ])
+
+
+def _advanced_keyboard(tw: bool, ad: bool, sd: bool, ap: bool) -> InlineKeyboardMarkup:
+    """Combined Step 7 keyboard: silent-hours toggle + all lifecycle toggles."""
+    tw_btn = InlineKeyboardButton(
+        "🟢 Silent Hours: ON ✅" if tw else "🔘 Silent Hours: OFF",
+        callback_data=CB_TW_OFF if tw else CB_TW_ON,
+    )
+    def _flag(v: bool) -> str:
+        return "✅" if v else "☐"
+    return InlineKeyboardMarkup([
+        [tw_btn],
+        [InlineKeyboardButton(f"{_flag(ad)} Auto-Delete after X hours",       callback_data=CB_LC_AD)],
+        [InlineKeyboardButton(f"{_flag(sd)} Self-Destruct after X seconds",   callback_data=CB_LC_SD)],
+        [InlineKeyboardButton(f"{_flag(ap)} Auto-Pin (+ unpin after X hrs)",  callback_data=CB_LC_AP)],
+        [
+            InlineKeyboardButton("⬅️ Back",   callback_data=CB_BACK_MAX_RUNS),
             InlineKeyboardButton("➡️ Next",   callback_data=CB_LC_NEXT),
             InlineKeyboardButton("❌ Cancel", callback_data=CB_CANCEL),
         ],
@@ -447,7 +463,7 @@ async def enter_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     if groups:
         await query.answer()
         await query.edit_message_text(
-            f"▰▱▱▱▱▱▱▱▱ 1/9\n📅 *Schedule New Post — Step 1/9*\n\n"
+            f"▰▱▱▱▱▱▱▱ 1/8\n*Chat* › Content › Recurrence › Timezone › 1st Run › Max Runs › Advanced › Summary\n📅 *Step 1/8 — Target Chat*\n\n"
             f"🗂 Choose the group or channel to post to:\n"
             f"_(Showing {min(_CHAT_PAGE_SIZE, len(groups))} of {len(groups)} known chats)_",
             parse_mode=ParseMode.MARKDOWN,
@@ -456,7 +472,7 @@ async def enter_wizard(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     else:
         await query.answer()
         await query.edit_message_text(
-            "▰▱▱▱▱▱▱▱▱ 1/9\n📅 *Schedule New Post — Step 1/9*\n\n"
+            "▰▱▱▱▱▱▱▱ 1/8\n*Chat* › Content › Recurrence › Timezone › 1st Run › Max Runs › Advanced › Summary\n📅 *Step 1/8 — Target Chat*\n\n"
             "⚠️ *No groups or channels found.*\n\n"
             "The bot hasn't been added to any group or channel yet, "
             "or you haven't added the bot yourself.\n\n"
@@ -495,7 +511,7 @@ async def cb_chat_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     await query.answer()
     await query.edit_message_text(
         f"✅ Selected: *{title}* (`{chat_id}`)\n\n"
-        "▰▰▱▱▱▱▱▱▱ 2/9\n📝 *Step 2/9 — Post Content*\n\n"
+        "▰▰▱▱▱▱▱▱ 2/8\nChat › *Content* › Recurrence › Timezone › 1st Run › Max Runs › Advanced › Summary\n📝 *Step 2/8 — Post Content*\n\n"
         "Send the content you want to post:\n"
         "• Plain text\n"
         "• Photo, video, document, or audio\n"
@@ -554,7 +570,7 @@ async def cb_chat_page(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     shown  = min(_CHAT_PAGE_SIZE, total - start)
     await query.answer()
     await query.edit_message_text(
-        f"▰▱▱▱▱▱▱▱▱ 1/9\n📅 *Schedule New Post — Step 1/9*\n\n"
+        f"▰▱▱▱▱▱▱▱ 1/8\n*Chat* › Content › Recurrence › Timezone › 1st Run › Max Runs › Advanced › Summary\n📅 *Step 1/8 — Target Chat*\n\n"
         f"🗂 Choose the group or channel to post to:\n"
         f"_(Showing {shown} of {total} known chats)_",
         parse_mode=ParseMode.MARKDOWN,
@@ -568,7 +584,7 @@ async def cb_manual_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     query = update.callback_query
     await query.answer()
     await query.edit_message_text(
-        "▰▱▱▱▱▱▱▱▱ 1/9\n📅 *Schedule New Post — Step 1/9*\n\n"
+        "▰▱▱▱▱▱▱▱ 1/8\n*Chat* › Content › Recurrence › Timezone › 1st Run › Max Runs › Advanced › Summary\n📅 *Step 1/8 — Target Chat*\n\n"
         "✏️ Type the *Chat ID* of the target channel or group:\n\n"
         "💡 Forward any message from the chat to @userinfobot to find its ID.\n\n"
         "Example: `-1001234567890`",
@@ -597,7 +613,7 @@ async def recv_chat_id(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     _w(context)["chat_id"] = chat_id
     await update.message.reply_text(
         f"✅ Chat ID saved: `{chat_id}`\n\n"
-        "▰▰▱▱▱▱▱▱▱ 2/9\n📝 *Step 2/9 — Post Content*\n\n"
+        "▰▰▱▱▱▱▱▱ 2/8\nChat › *Content* › Recurrence › Timezone › 1st Run › Max Runs › Advanced › Summary\n📝 *Step 2/8 — Post Content*\n\n"
         "Now send the content you want to post. This can be:\n"
         "• Plain text\n"
         "• A photo, video, document, or audio\n"
@@ -695,7 +711,7 @@ async def cb_back_to_content(update: Update, context: ContextTypes.DEFAULT_TYPE)
     w       = _w(context)
     chat_id = w.get("chat_id", "?")
     await query.edit_message_text(
-        f"▰▰▱▱▱▱▱▱▱ 2/9\n📝 *Step 2/9 — Post Content*\n\n"
+        f"▰▰▱▱▱▱▱▱ 2/8\nChat › *Content* › Recurrence › Timezone › 1st Run › Max Runs › Advanced › Summary\n📝 *Step 2/8 — Post Content*\n\n"
         "Send the content you want to post:\n"
         "• Plain text\n"
         "• Photo, video, document, or audio\n"
@@ -780,7 +796,7 @@ async def cb_ib_skip(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     _w(context).setdefault("inline_buttons", [])
     await _edit(query,
-        "▰▰▰▱▱▱▱▱▱ 3/9\n🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
+        "▰▰▰▱▱▱▱▱ 3/8\nChat › Content › *Recurrence* › Timezone › 1st Run › Max Runs › Advanced › Summary\n🔁 *Step 3/8 — Recurrence Type*\n\nHow often should this post be sent?",
         _recurrence_keyboard(),
     )
     return WIZARD_RECURRENCE
@@ -853,7 +869,7 @@ async def cb_ib_done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Finished adding buttons — move to recurrence."""
     query = update.callback_query
     await _edit(query,
-        "▰▰▰▱▱▱▱▱▱ 3/9\n🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
+        "▰▰▰▱▱▱▱▱ 3/8\nChat › Content › *Recurrence* › Timezone › 1st Run › Max Runs › Advanced › Summary\n🔁 *Step 3/8 — Recurrence Type*\n\nHow often should this post be sent?",
         _recurrence_keyboard(),
     )
     return WIZARD_RECURRENCE
@@ -876,7 +892,7 @@ async def cb_rec_once(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     _w(context)["recurrence_type"] = "once"
     query = update.callback_query
     await _edit(query,
-        "▰▰▰▰▱▱▱▱▱ 4/9\n🌍 *Step 4/9 — Timezone*\n\n"
+        "▰▰▰▰▱▱▱▱ 4/8\nChat › Content › Recurrence › *Timezone* › 1st Run › Max Runs › Advanced › Summary\n🌍 *Step 4/8 — Timezone*\n\n"
         "Select your timezone so the post time is interpreted correctly:",
         _timezone_keyboard(0),
     )
@@ -952,7 +968,7 @@ async def cb_interval_unit(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     _w(context)["interval_unit"] = unit
     await _edit(query,
         f"✅ Interval: every `{_w(context)['interval_value']} {unit}`\n\n"
-        "▰▰▰▰▱▱▱▱▱ 4/9\n🌍 *Step 4/9 — Timezone*\n\n"
+        "▰▰▰▰▱▱▱▱ 4/8\nChat › Content › Recurrence › *Timezone* › 1st Run › Max Runs › Advanced › Summary\n🌍 *Step 4/8 — Timezone*\n\n"
         "Select your timezone so the post time is interpreted correctly:",
         _timezone_keyboard(0),
     )
@@ -986,7 +1002,7 @@ async def cb_dow_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
         return WIZARD_DOW_SELECT
     await _edit(query,
         f"✅ Days: `{', '.join(DOW_LABELS[d] for d in sorted(selected))}`\n\n"
-        "▰▰▰▰▱▱▱▱▱ 4/9\n🌍 *Step 4/9 — Timezone*\n\n"
+        "▰▰▰▰▱▱▱▱ 4/8\nChat › Content › Recurrence › *Timezone* › 1st Run › Max Runs › Advanced › Summary\n🌍 *Step 4/8 — Timezone*\n\n"
         "Select your timezone so the post time is interpreted correctly:",
         _timezone_keyboard(0),
     )
@@ -1016,7 +1032,7 @@ async def recv_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     w.setdefault("time_window_enabled", False)
     await update.message.reply_text(
         f"✅ First run: `{text}` ({tz_str})\n\n"
-        "▰▰▰▰▰▰▱▱▱ 6/9\n🔢 *Step 6/9 — Max Runs*\n\n"
+        "▰▰▰▰▰▰▱▱ 6/8\nChat › Content › Recurrence › Timezone › 1st Run › *Max Runs* › Advanced › Summary\n🔢 *Step 6/8 — Max Runs*\n\n"
         "How many times should this post be sent?\n\n"
         "Tap a preset or type a custom number:",
         parse_mode=ParseMode.MARKDOWN,
@@ -1033,7 +1049,7 @@ async def cb_back_first_run(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Called from Max Runs back button — return to First Run screen."""
     query = update.callback_query
     await _edit(query,
-        "▰▰▰▰▰▱▱▱▱ 5/9\n🕐 *Step 5/9 — First Run Time*\n\n"
+        "▰▰▰▰▰▱▱▱ 5/8\nChat › Content › Recurrence › Timezone › *1st Run* › Max Runs › Advanced › Summary\n🕐 *Step 5/8 — First Run Time*\n\n"
         "• `HH:MM` — today at this time\n"
         "• `DD/MM/YYYY HH:MM` — specific date\n\n"
         "Or tap *💡 Suggest Best Time* to see active hours for this chat.",
@@ -1128,7 +1144,7 @@ async def cb_smart_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     await query.answer()
     await query.edit_message_text(
         f"✅ First run: `{time_str}` ({tz_str})\n\n"
-        "▰▰▰▰▰▰▱▱▱ 6/9\n🔢 *Step 6/9 — Max Runs*\n\n"
+        "▰▰▰▰▰▰▱▱ 6/8\nChat › Content › Recurrence › Timezone › 1st Run › *Max Runs* › Advanced › Summary\n🔢 *Step 6/8 — Max Runs*\n\n"
         "How many times should this post be sent?\n\n"
         "Tap a preset or type a custom number:",
         parse_mode=ParseMode.MARKDOWN,
@@ -1163,7 +1179,7 @@ async def cb_timezone_pick(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     await _edit(query,
         f"✅ Timezone: `{tz_name}`\n\n"
-        "▰▰▰▰▰▱▱▱▱ 5/9\n🕐 *Step 5/9 — First Run Time*\n\n"
+        "▰▰▰▰▰▱▱▱ 5/8\nChat › Content › Recurrence › Timezone › *1st Run* › Max Runs › Advanced › Summary\n🕐 *Step 5/8 — First Run Time*\n\n"
         "When should this post fire?\n\n"
         "Type the date/time:\n"
         "• `HH:MM` — today at this time (e.g. `14:30`)\n"
@@ -1182,7 +1198,7 @@ async def cb_back_timezone(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     """Called from First Run back button — return to Timezone picker."""
     query = update.callback_query
     await _edit(query,
-        "▰▰▰▰▱▱▱▱▱ 4/9\n🌍 *Step 4/9 — Timezone*\n\nSelect your timezone:",
+        "▰▰▰▰▱▱▱▱ 4/8\nChat › Content › Recurrence › *Timezone* › 1st Run › Max Runs › Advanced › Summary\n🌍 *Step 4/8 — Timezone*\n\nSelect your timezone:",
         _timezone_keyboard(0),
     )
     return WIZARD_TIMEZONE
@@ -1208,7 +1224,7 @@ async def cb_back_tz(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return WIZARD_INTERVAL_UNIT
     else:
         await _edit(query,
-            "▰▰▰▱▱▱▱▱▱ 3/9\n🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
+            "▰▰▰▱▱▱▱▱ 3/8\nChat › Content › *Recurrence* › Timezone › 1st Run › Max Runs › Advanced › Summary\n🔁 *Step 3/8 — Recurrence Type*\n\nHow often should this post be sent?",
             _recurrence_keyboard(),
         )
         return WIZARD_RECURRENCE
@@ -1252,13 +1268,16 @@ async def recv_max_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
     w.setdefault("time_window_enabled", False)
 
     label = "Unlimited" if val == 0 else str(val)
+    w.setdefault("auto_delete",   False)
+    w.setdefault("self_destruct", False)
+    w.setdefault("auto_pin",      False)
     await update.message.reply_text(
         f"✅ Max runs: *{label}*\n\n"
-        "▰▰▰▰▰▰▰▱▱ 7/9\n🕐 *Step 7/9 — Silent Hours (Time Window)*\n\n"
-        "Enable a daily time window during which posts are allowed to fire?\n"
-        "Posts outside this window will be *skipped*, not deleted.",
+        "▰▰▰▰▰▰▰▱ 7/8\nChat › Content › Recurrence › Timezone › 1st Run › Max Runs › *Advanced* › Summary\n⚙️ *Step 7/8 — Advanced Options*\n\n"
+        "Toggle optional features on/off, then tap *➡️ Next*:",
         parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_time_window_keyboard(False),
+        reply_markup=_advanced_keyboard(w.get("time_window_enabled", False),
+                                        w["auto_delete"], w["self_destruct"], w["auto_pin"]),
     )
     return WIZARD_TIME_WINDOW
 
@@ -1278,12 +1297,16 @@ async def cb_mr_preset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     w.setdefault("time_window_enabled", False)
 
     label = "Unlimited" if val == 0 else str(val)
+    w = _w(context)
+    w.setdefault("auto_delete",   False)
+    w.setdefault("self_destruct", False)
+    w.setdefault("auto_pin",      False)
     await _edit(query,
         f"✅ Max runs: *{label}*\n\n"
-        "▰▰▰▰▰▰▰▱▱ 7/9\n🕐 *Step 7/9 — Silent Hours (Time Window)*\n\n"
-        "Enable a daily time window during which posts are allowed to fire?\n"
-        "Posts outside this window will be *skipped*, not deleted.",
-        _time_window_keyboard(False),
+        "▰▰▰▰▰▰▰▱ 7/8\nChat › Content › Recurrence › Timezone › 1st Run › Max Runs › *Advanced* › Summary\n⚙️ *Step 7/8 — Advanced Options*\n\n"
+        "Toggle optional features on/off, then tap *➡️ Next*:",
+        _advanced_keyboard(w.get("time_window_enabled", False),
+                           w["auto_delete"], w["self_destruct"], w["auto_pin"]),
     )
     return WIZARD_TIME_WINDOW
 
@@ -1293,18 +1316,23 @@ async def cb_mr_preset(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
 # ---------------------------------------------------------------------------
 
 async def cb_tw_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Toggle silent-hours on/off; refresh the combined Advanced Options keyboard."""
     query = update.callback_query
+    w = _w(context)
     enabled = query.data == CB_TW_ON
-    _w(context)["time_window_enabled"] = enabled
-    await query.answer()
-    await query.edit_message_reply_markup(_time_window_keyboard(enabled))
+    w["time_window_enabled"] = enabled
+    await query.answer("🟢 Silent Hours enabled" if enabled else "🔘 Silent Hours disabled")
+    await query.edit_message_reply_markup(
+        _advanced_keyboard(enabled, w.get("auto_delete", False),
+                           w.get("self_destruct", False), w.get("auto_pin", False))
+    )
     return WIZARD_TIME_WINDOW
 
 
-async def cb_tw_proceed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+async def cb_adv_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
-    Called when user taps ➡️ Next on the time-window screen.
-    Routes to start-time input (if ON) or lifecycle (if OFF).
+    Called when user taps ➡️ Next on the Advanced Options screen.
+    Routes: TW_START (if silent hours ON) → lifecycle details → Summary.
     """
     query = update.callback_query
     w = _w(context)
@@ -1315,19 +1343,31 @@ async def cb_tw_proceed(update: Update, context: ContextTypes.DEFAULT_TYPE) -> i
             nav_keyboard(back_data=CB_BACK_TW),
         )
         return WIZARD_TW_START
-    else:
-        w["tw_start"] = None
-        w["tw_end"]   = None
+    # No silent hours — route straight to lifecycle detail(s) or summary
+    w["tw_start"] = None
+    w["tw_end"]   = None
+    if w.get("auto_delete"):
         await _edit(query,
-            "▰▰▰▰▰▰▰▰▱ 8/9\n⚙️ *Step 8/9 — Lifecycle Options*\n\n"
-            "Tap options to toggle them on/off, then tap *➡️ Next*:",
-            _lifecycle_keyboard(
-                w.get("auto_delete", False),
-                w.get("self_destruct", False),
-                w.get("auto_pin", False),
-            ),
+            "🗑 *Auto-Delete — After how many hours?*\n\n"
+            "Type a positive number (decimals OK, e.g. `24` or `0.5`):",
+            nav_keyboard(back_data=CB_BACK_TW),
         )
-        return WIZARD_LIFECYCLE
+        return WIZARD_AD_HOURS
+    if w.get("self_destruct"):
+        await _edit(query,
+            "💣 *Self-Destruct — After how many seconds?*\n\n"
+            "Type a positive integer (e.g. `60`):",
+            nav_keyboard(back_data=CB_BACK_TW),
+        )
+        return WIZARD_SD_SECS
+    if w.get("auto_pin"):
+        await _edit(query,
+            "📌 *Auto-Pin — Unpin after how many hours?*\n\n"
+            "Type a positive number (e.g. `12`):",
+            nav_keyboard(back_data=CB_BACK_TW),
+        )
+        return WIZARD_AP_HOURS
+    return await _show_summary(update, context)
 
 
 # ---------------------------------------------------------------------------
@@ -1372,16 +1412,35 @@ async def recv_tw_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
     w.setdefault("auto_delete",   False)
     w.setdefault("self_destruct", False)
     w.setdefault("auto_pin",      False)
-    await update.message.reply_text(
-        f"✅ Window: `{start}` → `{parsed}`\n\n"
-        "▰▰▰▰▰▰▰▰▱ 8/9\n⚙️ *Step 8/9 — Lifecycle Options*\n\n"
-        "Tap options to toggle them on/off, then tap *➡️ Next*:",
-        parse_mode=ParseMode.MARKDOWN,
-        reply_markup=_lifecycle_keyboard(
-            w["auto_delete"], w["self_destruct"], w["auto_pin"]
-        ),
-    )
-    return WIZARD_LIFECYCLE
+    # Route directly to first enabled lifecycle detail, or summary
+    if w["auto_delete"]:
+        await update.message.reply_text(
+            f"✅ Window: `{start}` → `{parsed}`\n\n"
+            "🗑 *Auto-Delete — After how many hours?*\n\n"
+            "Type a positive number (decimals OK, e.g. `24` or `0.5`):",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=nav_keyboard(back_data=CB_BACK_TW),
+        )
+        return WIZARD_AD_HOURS
+    if w["self_destruct"]:
+        await update.message.reply_text(
+            f"✅ Window: `{start}` → `{parsed}`\n\n"
+            "💣 *Self-Destruct — After how many seconds?*\n\n"
+            "Type a positive integer (e.g. `60`):",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=nav_keyboard(back_data=CB_BACK_TW),
+        )
+        return WIZARD_SD_SECS
+    if w["auto_pin"]:
+        await update.message.reply_text(
+            f"✅ Window: `{start}` → `{parsed}`\n\n"
+            "📌 *Auto-Pin — Unpin after how many hours?*\n\n"
+            "Type a positive number (e.g. `12`):",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=nav_keyboard(back_data=CB_BACK_TW),
+        )
+        return WIZARD_AP_HOURS
+    return await _show_summary_from_message(update, context)
 
 
 # ---------------------------------------------------------------------------
@@ -1389,6 +1448,7 @@ async def recv_tw_end(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int
 # ---------------------------------------------------------------------------
 
 async def cb_lc_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Toggle a lifecycle option on the Advanced Options screen; refresh keyboard in-place."""
     query = update.callback_query
     w = _w(context)
     key_map = {CB_LC_AD: "auto_delete", CB_LC_SD: "self_destruct", CB_LC_AP: "auto_pin"}
@@ -1396,34 +1456,37 @@ async def cb_lc_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> in
     w[key] = not w.get(key, False)
     await query.answer(f"{'✅ Enabled' if w[key] else '☐ Disabled'}: {key.replace('_', ' ').title()}")
     await query.edit_message_reply_markup(
-        _lifecycle_keyboard(w.get("auto_delete", False), w.get("self_destruct", False), w.get("auto_pin", False))
+        _advanced_keyboard(w.get("time_window_enabled", False),
+                           w.get("auto_delete", False), w.get("self_destruct", False),
+                           w.get("auto_pin", False))
     )
-    return WIZARD_LIFECYCLE
+    return WIZARD_TIME_WINDOW
 
 
 async def cb_lc_next(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Route to the first enabled lifecycle detail step, or directly to summary."""
+    """Route to the first enabled lifecycle detail step, or directly to summary.
+    (Kept for back-compat; primary entry is now cb_adv_next from Advanced Options.)"""
     query = update.callback_query
     w = _w(context)
     if w.get("auto_delete"):
         await _edit(query,
             "🗑 *Auto-Delete — After how many hours?*\n\n"
             "Type a positive number (decimals OK, e.g. `24` or `0.5`):",
-            nav_keyboard(back_data=CB_BACK_LIFECYCLE),
+            nav_keyboard(back_data=CB_BACK_TW),
         )
         return WIZARD_AD_HOURS
     if w.get("self_destruct"):
         await _edit(query,
             "💣 *Self-Destruct — After how many seconds?*\n\n"
             "Type a positive integer (e.g. `60`):",
-            nav_keyboard(back_data=CB_BACK_LIFECYCLE),
+            nav_keyboard(back_data=CB_BACK_TW),
         )
         return WIZARD_SD_SECS
     if w.get("auto_pin"):
         await _edit(query,
             "📌 *Auto-Pin — Unpin after how many hours?*\n\n"
             "Type a positive number (e.g. `12`):",
-            nav_keyboard(back_data=CB_BACK_LIFECYCLE),
+            nav_keyboard(back_data=CB_BACK_TW),
         )
         return WIZARD_AP_HOURS
     return await _show_summary(update, context)
@@ -1527,7 +1590,7 @@ def _build_summary(w: dict[str, Any]) -> str:
     first_run = w.get("first_run_raw", "—")
 
     return (
-        "▰▰▰▰▰▰▰▰▰ 9/9\n📋 *Post Summary — Please Review*\n\n"
+        "▰▰▰▰▰▰▰▰ 8/8\nChat › Content › Recurrence › Timezone › 1st Run › Max Runs › Advanced › *Summary*\n📋 *Post Summary — Please Review*\n\n"
         f"🗂 *Chat:* {w.get('chat_title') or ''} `{w.get('chat_id')}`\n"
         f"📝 *Content:* `{content_preview or '—'}`\n"
         f"🔁 *Recurrence:* {rec_line}\n"
@@ -1630,7 +1693,7 @@ async def cb_confirm_post(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def cb_back_recurrence(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await _edit(query,
-        "▰▰▰▱▱▱▱▱▱ 3/9\n🔁 *Step 3/9 — Recurrence Type*\n\nHow often should this post be sent?",
+        "▰▰▰▱▱▱▱▱ 3/8\nChat › Content › *Recurrence* › Timezone › 1st Run › Max Runs › Advanced › Summary\n🔁 *Step 3/8 — Recurrence Type*\n\nHow often should this post be sent?",
         _recurrence_keyboard(),
     )
     return WIZARD_RECURRENCE
@@ -1660,7 +1723,7 @@ async def cb_back_interval_unit(update: Update, context: ContextTypes.DEFAULT_TY
 async def cb_back_max_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await _edit(query,
-        "▰▰▰▰▰▰▱▱▱ 6/9\n🔢 *Step 6/9 — Max Runs*\n\n"
+        "▰▰▰▰▰▰▱▱ 6/8\nChat › Content › Recurrence › Timezone › 1st Run › *Max Runs* › Advanced › Summary\n🔢 *Step 6/8 — Max Runs*\n\n"
         "How many times should this post be sent?\n\n"
         "Tap a preset or type a custom number:",
         _max_runs_keyboard(),
@@ -1669,12 +1732,15 @@ async def cb_back_max_runs(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def cb_back_tw(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Go back to the Advanced Options screen (from TW_START or lifecycle detail)."""
     query = update.callback_query
     w = _w(context)
     await _edit(query,
-        "▰▰▰▰▰▰▰▱▱ 7/9\n🕐 *Step 7/9 — Silent Hours (Time Window)*\n\n"
-        "Enable a daily window during which posts are allowed to fire?",
-        _time_window_keyboard(w.get("time_window_enabled", False)),
+        "▰▰▰▰▰▰▰▱ 7/8\nChat › Content › Recurrence › Timezone › 1st Run › Max Runs › *Advanced* › Summary\n⚙️ *Step 7/8 — Advanced Options*\n\n"
+        "Toggle optional features on/off, then tap *➡️ Next*:",
+        _advanced_keyboard(w.get("time_window_enabled", False),
+                           w.get("auto_delete", False), w.get("self_destruct", False),
+                           w.get("auto_pin", False)),
     )
     return WIZARD_TIME_WINDOW
 
@@ -1690,14 +1756,17 @@ async def cb_back_tw_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
 
 async def cb_back_lifecycle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Back from Summary or lifecycle detail → return to Advanced Options screen."""
     query = update.callback_query
     w = _w(context)
     await _edit(query,
-        "▰▰▰▰▰▰▰▰▱ 8/9\n⚙️ *Step 8/9 — Lifecycle Options*\n\n"
-        "Tap options to toggle them on/off, then tap *➡️ Next*:",
-        _lifecycle_keyboard(w.get("auto_delete", False), w.get("self_destruct", False), w.get("auto_pin", False)),
+        "▰▰▰▰▰▰▰▱ 7/8\nChat › Content › Recurrence › Timezone › 1st Run › Max Runs › *Advanced* › Summary\n⚙️ *Step 7/8 — Advanced Options*\n\n"
+        "Toggle optional features on/off, then tap *➡️ Next*:",
+        _advanced_keyboard(w.get("time_window_enabled", False),
+                           w.get("auto_delete", False), w.get("self_destruct", False),
+                           w.get("auto_pin", False)),
     )
-    return WIZARD_LIFECYCLE
+    return WIZARD_TIME_WINDOW
 
 
 # ---------------------------------------------------------------------------
@@ -1799,8 +1868,13 @@ def build_schedule_wizard() -> ConversationHandler:
                 CallbackQueryHandler(cb_back_first_run, pattern=f"^{CB_BACK_FIRST_RUN}$"),
             ],
             WIZARD_TIME_WINDOW: [
+                # Silent-hours toggle buttons
                 CallbackQueryHandler(cb_tw_toggle,  pattern=f"^({CB_TW_ON}|{CB_TW_OFF})$"),
-                CallbackQueryHandler(cb_tw_proceed, pattern=f"^{CB_LC_NEXT}$"),
+                # Lifecycle toggle buttons (now on the same Advanced Options screen)
+                CallbackQueryHandler(cb_lc_toggle,  pattern=f"^({CB_LC_AD}|{CB_LC_SD}|{CB_LC_AP})$"),
+                # Next → route to detail steps or summary
+                CallbackQueryHandler(cb_adv_next,   pattern=f"^{CB_LC_NEXT}$"),
+                # Back to Max Runs
                 CallbackQueryHandler(cb_back_max_runs, pattern=f"^{CB_BACK_MAX_RUNS}$"),
             ],
             WIZARD_TW_START: [
@@ -1811,21 +1885,20 @@ def build_schedule_wizard() -> ConversationHandler:
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_tw_end),
                 CallbackQueryHandler(cb_back_tw_start, pattern=f"^{CB_BACK_TW_START}$"),
             ],
-            WIZARD_LIFECYCLE: [
-                CallbackQueryHandler(cb_lc_toggle, pattern=f"^({CB_LC_AD}|{CB_LC_SD}|{CB_LC_AP})$"),
-                CallbackQueryHandler(cb_lc_next,   pattern=f"^{CB_LC_NEXT}$"),
-                CallbackQueryHandler(cb_back_tw,   pattern=f"^{CB_BACK_TW}$"),
-            ],
             WIZARD_AD_HOURS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_ad_hours),
+                # Back → Advanced Options screen
+                CallbackQueryHandler(cb_back_tw, pattern=f"^{CB_BACK_TW}$"),
                 CallbackQueryHandler(cb_back_lifecycle, pattern=f"^{CB_BACK_LIFECYCLE}$"),
             ],
             WIZARD_SD_SECS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_sd_secs),
+                CallbackQueryHandler(cb_back_tw, pattern=f"^{CB_BACK_TW}$"),
                 CallbackQueryHandler(cb_back_lifecycle, pattern=f"^{CB_BACK_LIFECYCLE}$"),
             ],
             WIZARD_AP_HOURS: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, recv_ap_hours),
+                CallbackQueryHandler(cb_back_tw, pattern=f"^{CB_BACK_TW}$"),
                 CallbackQueryHandler(cb_back_lifecycle, pattern=f"^{CB_BACK_LIFECYCLE}$"),
             ],
             WIZARD_SUMMARY: [
